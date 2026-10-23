@@ -37,7 +37,6 @@ DADOS_ESTADOS_1_TURNO = {
     "RR": {"votos_esperados": 300_000,  "pct_a": 25.0, "pct_b": 75.0}
 }
 
-# Carrega o contorno geográfico localmente
 @st.cache_data
 def carregar_geojson_local():
     with open("mapa.geojson", "r", encoding="utf-8") as f:
@@ -107,7 +106,7 @@ def calcular_projecao_ponderada(dados_estados, progresso_geral):
     return (projecao_votos_totais_a / soma_total) * 100, (projecao_votos_totais_b / soma_total) * 100
 
 # ==============================================================================
-# 3. INTERFACE VISUAL COM MAPA INTERATIVO COROPLÉTICO
+# 3. INTERFACE VISUAL
 # ==============================================================================
 st.set_page_config(page_title="Monitor Estatístico de Urnas", page_icon="🔮", layout="wide")
 
@@ -117,7 +116,6 @@ st.subheader("Visualização geopolítica e eliminação de viés de apuração 
 st.sidebar.header("🕹️ Painel de Controle")
 progresso = st.sidebar.slider("Porcentagem geral de urnas abertas:", 0, 100, 0, step=5)
 
-# Processamento
 dados_atuais = buscar_dados_urnas_por_estado(progresso)
 proj_lula, proj_flavio = calcular_projecao_ponderada(dados_atuais, progresso)
 
@@ -134,7 +132,7 @@ with col1:
     st.markdown("### 🗳️ Placar Parcial Geral (Sem Filtro Regional)")
     st.progress(progresso / 100, text=f"Urnas Brasileiras Apuradas: {progresso}%")
     st.metric(label="🔴 Lula (Votos Reais Computados)", value=f"{votos_totais_lula:,}", delta=f"{pct_nacional_lula:.2f}%" if progresso > 0 else "50.00%")
-    st.metric(label="🟢 Flávio Bolsonaro (Votos Reais Computados)", value=f"{votos_totais_flavio:,}", delta=f"{pct_nacional_flavio:.2f}%" if progresso > 0 else "50.00%")
+    st.metric(label="🔵 Flávio Bolsonaro (Votos Reais Computados)", value=f"{votos_totais_flavio:,}", delta=f"{pct_nacional_flavio:.2f}%" if progresso > 0 else "50.00%")
 
 with col2:
     st.markdown("### 🧠 Projeção Ponderada por Estado (Previsão Final)")
@@ -147,7 +145,6 @@ with col2:
     st.metric(label="🔮 Lula (Resultado Final Projetado)", value=f"{proj_lula:.2f}%")
     st.metric(label="🔮 Flávio Bolsonaro (Resultado Final Projetado)", value=f"{proj_flavio:.2f}%")
 
-# CONSTRUÇÃO DO MAPA GEOPOLÍTICO ABAIXO DO PLACAR
 st.write("---")
 st.markdown("### 🗺️ Distribuição de Vantagem Geopolítica por Estado")
 
@@ -157,13 +154,13 @@ for uf, d in dados_atuais.items():
     votos_f = d["votos_b"]
     
     if votos_l == 0 and votos_f == 0:
-        vantagem_cor = 0  
+        vantagem_cor = 0  # Sem votos / Neutro
         lider = "Nenhum voto"
     elif votos_l > votos_f:
-        vantagem_cor = -1 
+        vantagem_cor = -1 # Lula lidera
         lider = "Lula"
     else:
-        vantagem_cor = 1  
+        vantagem_cor = 1  # Flávio Bolsonaro lidera
         lider = "Flávio Bolsonaro"
         
     dados_mapa.append({
@@ -178,14 +175,18 @@ for uf, d in dados_atuais.items():
 
 df_mapa = pd.DataFrame(dados_mapa)
 
-# Escala alterada para Vermelho (Lula) e Verde (Flávio Bolsonaro)
+# Ajuste explícito da escala de cores: [-1 é Vermelho], [0 é Cinza de Fundo], [1 é Azul]
 fig = px.choropleth(
     df_mapa,
     geojson=geojson_brasil,
     locations="id",
     featureidkey="properties.sigla",
     color="Vantagem Cor",
-    color_continuous_scale=[[0.0, "red"], [0.5, "#888888"], [1.0, "green"]],
+    color_continuous_scale=[
+        [0.0, "red"],       # -1
+        [0.5, "#777777"],   # 0 (Cinza para estados sem votos)
+        [1.0, "blue"]       # 1
+    ],
     range_color=[-1, 1],
     hover_data={"Estado": True, "Apurado": True, "Líder Atual": True, "Votos Lula": True, "Votos Flávio": True, "Vantagem Cor": False},
     labels={"Apurado": "Urnas Apuradas"}
@@ -196,21 +197,20 @@ fig.update_layout(
     margin={"r":0,"t":0,"l":0,"b":0},
     coloraxis_showscale=False,
     height=500,
-    paper_bgcolor='#E5E5E5',  # Fundo quadrado cinza claro
-    plot_bgcolor='#E5E5E5',   # Área interna cinza claro
+    paper_bgcolor='#D3D3D3',  # Fundo da extremidade/quadrado externa em CINZA CLARO
+    plot_bgcolor='#D3D3D3',   # Área interna em CINZA CLARO
     geo=dict(
         showocean=True,
-        oceancolor='#E5E5E5', # Oceano cinza claro
+        oceancolor='#D3D3D3', # Oceano/Fora das linhas em CINZA CLARO
         showlakes=False,
         showland=False,
-        bgcolor='#E5E5E5',    # Base do mapa cinza claro
+        bgcolor='#D3D3D3',    # Base geral em CINZA CLARO
         visible=False
     )
 )
 
 st.plotly_chart(fig, use_container_width=True)
 
-# Tabela detalhada
 st.write("---")
 st.markdown("### 📋 Detalhamento dos Estados")
 lista_estados = []
