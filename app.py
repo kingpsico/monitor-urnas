@@ -1,10 +1,9 @@
 import streamlit as st
-import time
+import random
 
 # ==============================================================================
 # DATABASES: MATRIZ DE PESOS DOS ESTADOS (BASEADO NO 1º TURNO DE 2026)
 # ==============================================================================
-# Valores de exemplo aproximados do peso eleitoral e comportamento do 1º turno
 DADOS_ESTADOS_1_TURNO = {
     "SP": {"votos_esperados": 27_000_000, "pct_a": 48.0, "pct_b": 52.0},
     "MG": {"votos_esperados": 12_000_000, "pct_a": 51.0, "pct_b": 49.0},
@@ -36,17 +35,16 @@ DADOS_ESTADOS_1_TURNO = {
 }
 
 # ==============================================================================
-# 1. SIMULADOR INTELIGENTE DE RITMO REGIONAL
+# 1. SIMULADOR COM RUIDO E OSCILAÇÃO REALISTA
 # ==============================================================================
 def buscar_dados_urnas_por_estado(progresso_geral):
-    """
-    Simula a apuração avançando de forma desigual entre os estados.
-    Estados do Sul/Sudeste começam apurando mais rápido neste exemplo.
-    """
     dados_apuracao_estados = {}
     
+    # Fixamos uma semente baseada no progresso para manter consistência ao mover o slider
+    random.seed(progresso_geral)
+    
     for uf, info in DADOS_ESTADOS_1_TURNO.items():
-        # Define ritmos de velocidade diferentes por região para testar o modelo
+        # Velocidades diferentes por região
         if uf in ["SP", "PR", "SC", "RS"]:
             progresso_uf = min(100, progresso_geral * 1.3)
         elif uf in ["BA", "PE", "MA", "PI"]:
@@ -55,7 +53,16 @@ def buscar_dados_urnas_por_estado(progresso_geral):
             progresso_uf = progresso_geral
             
         votos_apurados = int(info["votos_esperados"] * (progresso_uf / 100))
-        votos_a = int(votos_apurados * (info["pct_a"] / 100))
+        
+        # INJEÇÃO DE OSCILAÇÃO: Se a apuração está no começo, o resultado local varia mais.
+        # Conforme chega perto de 100%, a variação cai para zero.
+        if 0 < progresso_uf < 100:
+            fator_variacao = random.uniform(-3.5, 3.5) * (1 - (progresso_uf / 100))
+            pct_ajustado_a = max(0, min(100, info["pct_a"] + fator_variacao))
+        else:
+            pct_ajustado_a = info["pct_a"]
+            
+        votos_a = int(votos_apurados * (pct_ajustado_a / 100))
         votos_b = votos_apurados - votos_a
         
         dados_apuracao_estados[uf] = {
@@ -68,7 +75,7 @@ def buscar_dados_urnas_por_estado(progresso_geral):
     return dados_apuracao_estados
 
 # ==============================================================================
-# 2. ALGORITMO DE PROJEÇÃO PONDERADA ESTADUAL ("NÍVEL NASA")
+# 2. ALGORITMO DE PROJEÇÃO PONDERADA ESTADUAL
 # ==============================================================================
 def calcular_projecao_ponderada(dados_estados):
     projecao_votos_totais_a = 0
@@ -79,11 +86,10 @@ def calcular_projecao_ponderada(dados_estados):
         votos_ja_apurados_b = dados["votos_b"]
         votos_restantes = dados["votos_total_esperados"] - dados["votos_apurados"]
         
-        # Tendência histórica do 1º Turno para o cálculo do que falta apurar
+        # Preditor projeta os votos que faltam com base na linha de base histórica
         pct_historico_a = DADOS_ESTADOS_1_TURNO[uf]["pct_a"] / 100
         pct_historico_b = DADOS_ESTADOS_1_TURNO[uf]["pct_b"] / 100
         
-        # Projeta os votos que faltam usando a tendência local daquele estado
         votos_projetados_a = votos_ja_apurados_a + (votos_restantes * pct_historico_a)
         votos_projetados_b = votos_ja_apurados_b + (votos_restantes * pct_historico_b)
         
@@ -102,7 +108,7 @@ def calcular_projecao_ponderada(dados_estados):
 st.set_page_config(page_title="Monitor Estatístico de Urnas", page_icon="🔮", layout="wide")
 
 st.title("🔮 Monitor de Urnas com Projeção Ponderada por Estado")
-st.subheader("Algoritmo de eliminação de viés de apuração regional")
+st.subheader("Algoritmo com ajuste fino de oscilação estatística local")
 
 st.sidebar.header("🕹️ Painel de Controle")
 progresso = st.sidebar.slider("Porcentagem geral de urnas abertas:", 0, 100, 0, step=5)
@@ -133,11 +139,10 @@ with col2:
     if progresso < 10:
         st.warning("⚠️ Aguarde pelo menos 10% das urnas para estabilizar o cálculo regional.")
     else:
-        st.success("✅ Modelo matemático calculando pesos com estabilidade.")
+        st.success("✅ Modelo matemático calculando pesos com estabilidade dinâmica.")
     st.metric(label="🔮 Candidato A (Resultado Final Projetado)", value=f"{proj_a:.2f}%")
     st.metric(label="🔮 Candidato B (Resultado Final Projetado)", value=f"{proj_b:.2f}%")
 
-# Tabela Detalhada por Estado na parte inferior do painel
 st.write("---")
 st.markdown("### 🗺️ Status da Apuração por Estado")
 lista_estados = []
@@ -150,3 +155,4 @@ for uf, d in dados_atuais.items():
         "Votos Cand. B": f"{d['votos_b']:,}"
     })
 st.table(lista_estados)
+
