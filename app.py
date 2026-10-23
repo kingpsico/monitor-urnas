@@ -35,7 +35,7 @@ DADOS_ESTADOS_1_TURNO = {
 }
 
 # ==============================================================================
-# 1. SIMULADOR COM RUIDO REALISTA
+# 1. SIMULADOR COM RUÍDO ELEITORAL REALISTA
 # ==============================================================================
 def buscar_dados_urnas_por_estado(progresso_geral):
     dados_apuracao_estados = {}
@@ -70,33 +70,59 @@ def buscar_dados_urnas_por_estado(progresso_geral):
     return dados_apuracao_estados
 
 # ==============================================================================
-# 2. ALGORITMO DE PROJEÇÃO PONDERADA ESTADUAL
+# 2. PROCESSADOR DE PROJEÇÃO ESTADUAL E NACIONAL
 # ==============================================================================
-def calcular_projecao_ponderada(dados_estados, progresso_geral):
-    if progresso_geral == 0:
-        return 50.0, 50.0
-        
-    projecao_votos_totais_a = 0
-    projecao_votos_totais_b = 0
+def processar_modelos_eleitorais(dados_estados, progresso_geral):
+    dados_consolidados_estados = {}
+    total_projetado_nacional_a = 0
+    total_projetado_nacional_b = 0
     
     for uf, dados in dados_estados.items():
         votos_ja_apurados_a = dados["votos_a"]
         votos_ja_apurados_b = dados["votos_b"]
         votos_restantes = dados["votos_total_esperados"] - dados["votos_apurados"]
         
-        pct_historico_a = DADOS_ESTADOS_1_TURNO[uf]["pct_a"] / 100
+        if progresso_geral == 0:
+            proj_estado_a = dados["votos_total_esperados"] * 0.5
+            proj_estado_b = dados["votos_total_esperados"] * 0.5
+        else:
+            pct_historico_a = DADOS_ESTADOS_1_TURNO[uf]["pct_a"] / 100
+            pct_historico_b = 1.0 - pct_historico_a
+            
+            proj_estado_a = votos_ja_apurados_a + (votos_restantes * pct_historico_a)
+            proj_estado_b = votos_ja_apurados_b + (votos_restantes * pct_historico_b)
+            
+        total_projetado_nacional_a += proj_estado_a
+        total_projetado_nacional_b += proj_estado_b
         
-        votos_projetados_a = votos_ja_apurados_a + (votos_restantes * pct_historico_a)
-        votos_projetados_b = votos_ja_apurados_b + (votos_restantes * (1.0 - pct_historico_a))
+        soma_estado = proj_estado_a + proj_estado_b
+        pct_proj_estado_a = (proj_estado_a / soma_estado * 100) if soma_estado > 0 else 50.0
+        pct_proj_estado_b = (proj_estado_b / soma_estado * 100) if soma_estado > 0 else 50.0
         
-        projecao_votos_totais_a += votos_projetados_a
-        projecao_votos_totais_b += votos_projetados_b
+        dados_consolidados_estados[uf] = {
+            "progresso_uf": dados["progresso_uf"],
+            "votos_total_esperados": dados["votos_total_esperados"],
+            "votos_apurados": dados["votos_apurados"],
+            "votos_a": dados["votos_a"],
+            "votos_b": dados["votos_b"],
+            "votos_projetados_total": int(soma_estado),
+            "votos_projetados_a": int(proj_estado_a),
+            "votos_projetados_b": int(proj_estado_b),
+            "pct_projetado_a": pct_proj_estado_a,
+            "pct_projetado_b": pct_proj_estado_b
+        }
         
-    soma_total = projecao_votos_totais_a + projecao_votos_totais_b
-    return (projecao_votos_totais_a / soma_total) * 100, (projecao_votos_totais_b / soma_total) * 100
+    soma_nacional = total_projetado_nacional_a + total_projetado_nacional_b
+    if soma_nacional == 0:
+        pct_nacional_proj_a, pct_nacional_proj_b = 50.0, 50.0
+    else:
+        pct_nacional_proj_a = (total_projetado_nacional_a / soma_nacional) * 100
+        pct_nacional_proj_b = (total_projetado_nacional_b / soma_nacional) * 100
+        
+    return dados_consolidados_estados, pct_nacional_proj_a, pct_nacional_proj_b
 
 # ==============================================================================
-# 3. INTERFACE VISUAL
+# 3. INTERFACE VISUAL DO AGENTE
 # ==============================================================================
 st.set_page_config(page_title="Monitor Estatístico de Urnas", page_icon="🔮", layout="wide")
 
@@ -106,11 +132,13 @@ st.subheader("Visualização geopolítica e eliminação de viés de apuração 
 st.sidebar.header("🕹️ Painel de Controle")
 progresso = st.sidebar.slider("Porcentagem geral de urnas abertas:", 0, 100, 0, step=5)
 
-dados_atuais = buscar_dados_urnas_por_estado(progresso)
-proj_lula, proj_flavio = calcular_projecao_ponderada(dados_atuais, progresso)
+# Execução dos Cálculos
+dados_simulados = buscar_dados_urnas_por_estado(progresso)
+dados_estados_com_projecao, proj_lula, proj_flavio = processar_modelos_eleitorais(dados_simulados, progresso)
 
-votos_totais_lula = sum(d["votos_a"] for d in dados_atuais.values())
-votos_totais_flavio = sum(d["votos_b"] for d in dados_atuais.values())
+# Consolidação do Placar Parcial Real
+votos_totais_lula = sum(d["votos_a"] for d in dados_estados_com_projecao.values())
+votos_totais_flavio = sum(d["votos_b"] for d in dados_estados_com_projecao.values())
 votos_totais_geral = votos_totais_lula + votos_totais_flavio
 
 pct_nacional_lula = (votos_totais_lula / votos_totais_geral * 100) if votos_totais_geral > 0 else 50.0
@@ -135,15 +163,22 @@ with col2:
     st.metric(label="🔮 Lula (Resultado Final Projetado)", value=f"{proj_lula:.2f}%")
     st.metric(label="🔮 Flávio Bolsonaro (Resultado Final Projetado)", value=f"{proj_flavio:.2f}%")
 
+# TABELA DETALHADA COM AS COLUNAS PONDERADAS
 st.write("---")
-st.markdown("### 📋 Detalhamento dos Estados")
-lista_estados = []
-for uf, d in dados_atuais.items():
-    lista_estados.append({
+st.markdown("### 📋 Detalhamento Estratégico por Estado")
+st.caption("A coluna 'Votos Finais Projetados (Total)' pondera o ritmo da apuração atual cruzando com a abstenção e o histórico do 1º turno.")
+
+lista_tabela = []
+for uf, d in dados_estados_com_projecao.items():
+    lista_tabela.append({
         "Estado": uf,
         "Progresso": f"{d['progresso_uf']:.1f}%",
-        "Votos Apurados": f"{d['votos_apurados']:,}",
-        "Votos Lula": f"{d['votos_a']:,}",
-        "Votos Flávio Bolsonaro": f"{d['votos_b']:,}"
+        "Votos Apurados (Reais)": f"{d['votos_apurados']:,}",
+        "Votos Lula (Parcial)": f"{d['votos_a']:,}",
+        "Votos Flávio (Parcial)": f"{d['votos_b']:,}",
+        "Votos Finais Projetados (Total)": f"{d['votos_projetados_total']:,}",
+        "Projeção Final Lula": f"{d['pct_projetado_a']:.2f}%",
+        "Projeção Final Flávio": f"{d['pct_projetado_b']:.2f}%"
     })
-st.table(lista_estados)
+
+st.table(lista_tabela)
