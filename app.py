@@ -1,8 +1,5 @@
 import streamlit as st
 import random
-import plotly.express as px
-import pandas as pd
-import json
 
 # ==============================================================================
 # DATABASES: MATRIZ DE PESOS DOS ESTADOS (BASEADO NO 1º TURNO)
@@ -36,13 +33,6 @@ DADOS_ESTADOS_1_TURNO = {
     "AP": {"votos_esperados": 500_000,  "pct_a": 46.0, "pct_b": 54.0},
     "RR": {"votos_esperados": 300_000,  "pct_a": 25.0, "pct_b": 75.0}
 }
-
-@st.cache_data
-def carregar_geojson_local():
-    with open("mapa.geojson", "r", encoding="utf-8") as f:
-        return json.load(f)
-
-geojson_brasil = carregar_geojson_local()
 
 # ==============================================================================
 # 1. SIMULADOR COM RUIDO REALISTA
@@ -144,72 +134,6 @@ with col2:
         st.success("✅ Modelo matemático calculando pesos com estabilidade dinâmica.")
     st.metric(label="🔮 Lula (Resultado Final Projetado)", value=f"{proj_lula:.2f}%")
     st.metric(label="🔮 Flávio Bolsonaro (Resultado Final Projetado)", value=f"{proj_flavio:.2f}%")
-
-st.write("---")
-st.markdown("### 🗺️ Distribuição de Vantagem Geopolítica por Estado")
-
-dados_mapa = []
-for uf, d in dados_atuais.items():
-    votos_l = d["votos_a"]
-    votos_f = d["votos_b"]
-    
-    if votos_l == 0 and votos_f == 0:
-        vantagem_cor = 0  # Sem votos / Neutro
-        lider = "Nenhum voto"
-    elif votos_l > votos_f:
-        vantagem_cor = -1 # Lula lidera
-        lider = "Lula"
-    else:
-        vantagem_cor = 1  # Flávio Bolsonaro lidera
-        lider = "Flávio Bolsonaro"
-        
-    dados_mapa.append({
-        "id": uf,
-        "Estado": uf,
-        "Apurado": f"{d['progresso_uf']:.1f}%",
-        "Vantagem Cor": vantagem_cor,
-        "Líder Atual": lider,
-        "Votos Lula": f"{votos_l:,}",
-        "Votos Flávio": f"{votos_f:,}"
-    })
-
-df_mapa = pd.DataFrame(dados_mapa)
-
-# Ajuste explícito da escala de cores: [-1 é Vermelho], [0 é Cinza de Fundo], [1 é Azul]
-fig = px.choropleth(
-    df_mapa,
-    geojson=geojson_brasil,
-    locations="id",
-    featureidkey="properties.sigla",
-    color="Vantagem Cor",
-    color_continuous_scale=[
-        [0.0, "red"],       # -1
-        [0.5, "#777777"],   # 0 (Cinza para estados sem votos)
-        [1.0, "blue"]       # 1
-    ],
-    range_color=[-1, 1],
-    hover_data={"Estado": True, "Apurado": True, "Líder Atual": True, "Votos Lula": True, "Votos Flávio": True, "Vantagem Cor": False},
-    labels={"Apurado": "Urnas Apuradas"}
-)
-
-fig.update_geos(fitbounds="locations", visible=False)
-fig.update_layout(
-    margin={"r":0,"t":0,"l":0,"b":0},
-    coloraxis_showscale=False,
-    height=500,
-    paper_bgcolor='#D3D3D3',  # Fundo da extremidade/quadrado externa em CINZA CLARO
-    plot_bgcolor='#D3D3D3',   # Área interna em CINZA CLARO
-    geo=dict(
-        showocean=True,
-        oceancolor='#D3D3D3', # Oceano/Fora das linhas em CINZA CLARO
-        showlakes=False,
-        showland=False,
-        bgcolor='#D3D3D3',    # Base geral em CINZA CLARO
-        visible=False
-    )
-)
-
-st.plotly_chart(fig, use_container_width=True)
 
 st.write("---")
 st.markdown("### 📋 Detalhamento dos Estados")
