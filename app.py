@@ -1,8 +1,12 @@
 import streamlit as st
 import random
+import plotly.express as px
+import pandas as pd
+import json
+import urllib.request
 
 # ==============================================================================
-# DATABASES: MATRIZ DE PESOS DOS ESTADOS (BASEADO NO 1º TURNO DE 2026)
+# DATABASES: MATRIZ DE PESOS DOS ESTADOS (BASEADO NO 1º TURNO)
 # ==============================================================================
 DADOS_ESTADOS_1_TURNO = {
     "SP": {"votos_esperados": 27_000_000, "pct_a": 48.0, "pct_b": 52.0},
@@ -34,17 +38,23 @@ DADOS_ESTADOS_1_TURNO = {
     "RR": {"votos_esperados": 300_000,  "pct_a": 25.0, "pct_b": 75.0}
 }
 
+# Carrega o contorno geográfico dos estados do Brasil de forma rápida
+@st.cache_data
+def carregar_geojson():
+    url = "https://githubusercontent.com"
+    with urllib.request.urlopen(url) as response:
+        return json.loads(response.read().decode())
+
+geojson_brasil = carregar_geojson()
+
 # ==============================================================================
-# 1. SIMULADOR COM RUIDO E OSCILAÇÃO REALISTA
+# 1. SIMULADOR COM RUIDO REALISTA
 # ==============================================================================
 def buscar_dados_urnas_por_estado(progresso_geral):
     dados_apuracao_estados = {}
-    
-    # Fixamos uma semente baseada no progresso para manter consistência ao mover o slider
     random.seed(progresso_geral)
     
     for uf, info in DADOS_ESTADOS_1_TURNO.items():
-        # Velocidades diferentes por região
         if uf in ["SP", "PR", "SC", "RS"]:
             progresso_uf = min(100, progresso_geral * 1.3)
         elif uf in ["BA", "PE", "MA", "PI"]:
@@ -54,8 +64,6 @@ def buscar_dados_urnas_por_estado(progresso_geral):
             
         votos_apurados = int(info["votos_esperados"] * (progresso_uf / 100))
         
-        # INJEÇÃO DE OSCILAÇÃO: Se a apuração está no começo, o resultado local varia mais.
-        # Conforme chega perto de 100%, a variação cai para zero.
         if 0 < progresso_uf < 100:
             fator_variacao = random.uniform(-3.5, 3.5) * (1 - (progresso_uf / 100))
             pct_ajustado_a = max(0, min(100, info["pct_a"] + fator_variacao))
@@ -77,7 +85,10 @@ def buscar_dados_urnas_por_estado(progresso_geral):
 # ==============================================================================
 # 2. ALGORITMO DE PROJEÇÃO PONDERADA ESTADUAL
 # ==============================================================================
-def calcular_projecao_ponderada(dados_estados):
+def calcular_projecao_ponderada(dados_estados, progresso_geral):
+    if progresso_geral == 0:
+        return 50.0, 50.0
+        
     projecao_votos_totais_a = 0
     projecao_votos_totais_b = 0
     
@@ -86,73 +97,127 @@ def calcular_projecao_ponderada(dados_estados):
         votos_ja_apurados_b = dados["votos_b"]
         votos_restantes = dados["votos_total_esperados"] - dados["votos_apurados"]
         
-        # Preditor projeta os votos que faltam com base na linha de base histórica
         pct_historico_a = DADOS_ESTADOS_1_TURNO[uf]["pct_a"] / 100
-        pct_historico_b = DADOS_ESTADOS_1_TURNO[uf]["pct_b"] / 100
         
         votos_projetados_a = votos_ja_apurados_a + (votos_restantes * pct_historico_a)
-        votos_projetados_b = votos_ja_apurados_b + (votos_restantes * pct_historico_b)
+        votos_projetados_b = votos_ja_apurados_b + (votos_restantes * (1.0 - pct_historico_a))
         
         projecao_votos_totais_a += votos_projetados_a
         projecao_votos_totais_b += votos_projetados_b
         
     soma_total = projecao_votos_totais_a + projecao_votos_totais_b
-    if soma_total == 0:
-        return 50.0, 50.0
-        
     return (projecao_votos_totais_a / soma_total) * 100, (projecao_votos_totais_b / soma_total) * 100
 
 # ==============================================================================
-# 3. INTERFACE VISUAL DO SISTEMA
+# 3. INTERFACE VISUAL COM MAPA INTERATIVO COROPLÉTICO
 # ==============================================================================
 st.set_page_config(page_title="Monitor Estatístico de Urnas", page_icon="🔮", layout="wide")
 
-st.title("🔮 Monitor de Urnas com Projeção Ponderada por Estado")
-st.subheader("Algoritmo com ajuste fino de oscilação estatística local")
+st.title("🔮 Monitor de Urnas com Projeção por Estado")
+st.subheader("Visualização geopolítica e eliminação de viés de apuração em tempo real")
 
-st.sidebar.header("🕹️ Painel de Controle")
+st.sidebar.header("🕹 Orograph de Controle")
 progresso = st.sidebar.slider("Porcentagem geral de urnas abertas:", 0, 100, 0, step=5)
 
-# Processamento dos Modelos
+# Processamento
 dados_atuais = buscar_dados_urnas_por_estado(progresso)
-proj_a, proj_b = calcular_projecao_ponderada(dados_atuais)
+proj_lula, proj_flavio = calcular_projecao_ponderada(dados_atuais, progresso)
 
-# Consolidação Nacional Atual
-votos_totais_a = sum(d["votos_a"] for d in dados_atuais.values())
-votos_totais_b = sum(d["votos_b"] for d in dados_atuais.values())
-votos_totais_geral = votos_totais_a + votos_totais_b
+votos_totais_lula = sum(d["votos_a"] for d in dados_atuais.values())
+votos_totais_flavio = sum(d["votos_b"] for d in dados_atuais.values())
+votos_totais_geral = votos_totais_lula + votos_totais_flavio
 
-pct_nacional_a = (votos_totais_a / votos_totais_geral * 100) if votos_totais_geral > 0 else 0
-pct_nacional_b = (votos_totais_b / votos_totais_geral * 100) if votos_totais_geral > 0 else 0
+pct_nacional_lula = (votos_totais_lula / votos_totais_geral * 100) if votos_totais_geral > 0 else 50.0
+pct_nacional_flavio = (votos_totais_flavio / votos_totais_geral * 100) if votos_totais_geral > 0 else 50.0
 
-# Exibição dos Blocos Principais
 col1, col2 = st.columns(2)
 
 with col1:
     st.markdown("### 🗳️ Placar Parcial Geral (Sem Filtro Regional)")
     st.progress(progresso / 100, text=f"Urnas Brasileiras Apuradas: {progresso}%")
-    st.metric(label="🟢 Candidato A (Votos Reais Computados)", value=f"{votos_totais_a:,}", delta=f"{pct_nacional_a:.2f}%")
-    st.metric(label="🔵 Candidato B (Votos Reais Computados)", value=f"{votos_totais_b:,}", delta=f"{pct_nacional_b:.2f}%")
+    st.metric(label="🔴 Lula (Votos Reais Computados)", value=f"{votos_totais_lula:,}", delta=f"{pct_nacional_lula:.2f}%")
+    st.metric(label="🔵 Flávio Bolsonaro (Votos Reais Computados)", value=f"{votos_totais_flavio:,}", delta=f"{pct_nacional_flavio:.2f}%")
 
 with col2:
     st.markdown("### 🧠 Projeção Ponderada por Estado (Previsão Final)")
-    if progresso < 10:
+    if progresso == 0:
+        st.info("📊 Aguardando abertura das urnas. Modelo inicializado em estabilidade absoluta.")
+    elif progresso < 10:
         st.warning("⚠️ Aguarde pelo menos 10% das urnas para estabilizar o cálculo regional.")
     else:
         st.success("✅ Modelo matemático calculando pesos com estabilidade dinâmica.")
-    st.metric(label="🔮 Candidato A (Resultado Final Projetado)", value=f"{proj_a:.2f}%")
-    st.metric(label="🔮 Candidato B (Resultado Final Projetado)", value=f"{proj_b:.2f}%")
+    st.metric(label="🔮 Lula (Resultado Final Projetado)", value=f"{proj_lula:.2f}%")
+    st.metric(label="🔮 Flávio Bolsonaro (Resultado Final Projetado)", value=f"{proj_flavio:.2f}%")
 
+# CONSTRUÇÃO DO MAPA GEOPOLÍTICO ABAIXO DO PLACAR
 st.write("---")
-st.markdown("### 🗺️ Status da Apuração por Estado")
+st.markdown("### 🗺️ Distribuição de Vantagem Geopolítica por Estado")
+
+# Prepara a tabela de dados para alimentar o mapa
+dados_mapa = []
+for uf, d in dados_atuais.items():
+    votos_l = d["votos_a"]
+    votos_f = d["votos_b"]
+    
+    # Lógica de coloração baseada em quem está ganhando naquele momento
+    if votos_l == 0 and votos_f == 0:
+        vantagem_cor = 0  # Cinza neutro no início
+        lider = "Nenhum voto"
+    elif votos_l > votos_f:
+        vantagem_cor = -1 # Vermelho para Lula
+        lider = "Lula"
+    else:
+        vantagem_cor = 1  # Azul para Flávio Bolsonaro
+        lider = "Flávio Bolsonaro"
+        
+    dados_mapa.append({
+        "id": uf,
+        "Estado": uf,
+        "Apurado": f"{d['progresso_uf']:.1f}%",
+        "Vantagem Cor": vantagem_cor,
+        "Líder Atual": lider,
+        "Votos Lula": f"{votos_l:,}",
+        "Votos Flávio": f"{votos_f:,}"
+    })
+
+df_mapa = pd.DataFrame(dados_mapa)
+
+# Renderiza o mapa do Brasil usando Plotly Express Choropleth
+fig = px.choropleth(
+    df_mapa,
+    geojson=geojson_brasil,
+    locations="id",
+    featureidkey="properties.sigla",
+    color="Vantagem Cor",
+    color_continuous_scale=[[0.0, "red"], [0.5, "#444444"], [1.0, "blue"]],
+    range_color=[-1, 1],
+    hover_data={"Estado": True, "Apurado": True, "Líder Atual": True, "Votos Lula": True, "Votos Flávio": True, "Vantagem Cor": False},
+    labels={"Apurado": "Urnas Apuradas"}
+)
+
+fig.update_geos(fitbounds="locations", visible=False)
+fig.update_layout(
+    margin={"r":0,"t":0,"l":0,"b":0},
+    coloraxis_showscale=False,
+    height=500,
+    geo=dict(bgcolor='rgba(0,0,0,0)'),
+    paper_bgcolor='rgba(0,0,0,0)'
+)
+
+st.plotly_chart(fig, use_container_width=True)
+
+# Tabela detalhada
+st.write("---")
+st.markdown("### 📋 Detalhamento dos Estados")
 lista_estados = []
 for uf, d in dados_atuais.items():
     lista_estados.append({
         "Estado": uf,
         "Progresso": f"{d['progresso_uf']:.1f}%",
         "Votos Apurados": f"{d['votos_apurados']:,}",
-        "Votos Cand. A": f"{d['votos_a']:,}",
-        "Votos Cand. B": f"{d['votos_b']:,}"
+        "Votos Lula": f"{d['votos_a']:,}",
+        "Votos Flávio Bolsonaro": f"{d['votos_b']:,}"
     })
 st.table(lista_estados)
+
 
