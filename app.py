@@ -3,7 +3,6 @@ import random
 import plotly.express as px
 import pandas as pd
 import json
-import urllib.request
 
 # ==============================================================================
 # DATABASES: MATRIZ DE PESOS DOS ESTADOS (BASEADO NO 1º TURNO)
@@ -38,18 +37,13 @@ DADOS_ESTADOS_1_TURNO = {
     "RR": {"votos_esperados": 300_000,  "pct_a": 25.0, "pct_b": 75.0}
 }
 
-# Carrega o contorno geográfico dos estados do Brasil injetando cabeçalho de segurança
+# Carrega o contorno geográfico localmente sem depender da internet externa
 @st.cache_data
-def carregar_geojson():
-    url = "https://githubusercontent.com"
-    req = urllib.request.Request(
-        url, 
-        headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-    )
-    with urllib.request.urlopen(req) as response:
-        return json.loads(response.read().decode())
+def carregar_geojson_local():
+    with open("mapa.geojson", "r", encoding="utf-8") as f:
+        return json.load(f)
 
-geojson_brasil = carregar_geojson()
+geojson_brasil = carregar_geojson_local()
 
 # ==============================================================================
 # 1. SIMULADOR COM RUIDO REALISTA
@@ -139,8 +133,8 @@ col1, col2 = st.columns(2)
 with col1:
     st.markdown("### 🗳️ Placar Parcial Geral (Sem Filtro Regional)")
     st.progress(progresso / 100, text=f"Urnas Brasileiras Apuradas: {progresso}%")
-    st.metric(label="🔴 Lula (Votos Reais Computados)", value=f"{votos_totais_lula:,}", delta=f"{pct_nacional_lula:.2f}%")
-    st.metric(label="🔵 Flávio Bolsonaro (Votos Reais Computados)", value=f"{votos_totais_flavio:,}", delta=f"{pct_nacional_flavio:.2f}%")
+    st.metric(label="🔴 Lula (Votos Reais Computados)", value=f"{votos_totais_lula:,}", delta=f"{pct_nacional_lula:.2f}%" if progresso > 0 else "50.00%")
+    st.metric(label="🔵 Flávio Bolsonaro (Votos Reais Computados)", value=f"{votos_totais_flavio:,}", delta=f"{pct_nacional_flavio:.2f}%" if progresso > 0 else "50.00%")
 
 with col2:
     st.markdown("### 🧠 Projeção Ponderada por Estado (Previsão Final)")
@@ -157,7 +151,6 @@ with col2:
 st.write("---")
 st.markdown("### 🗺️ Distribuição de Vantagem Geopolítica por Estado")
 
-# Prepara a tabela de dados para alimentar o mapa
 dados_mapa = []
 for uf, d in dados_atuais.items():
     votos_l = d["votos_a"]
@@ -185,7 +178,6 @@ for uf, d in dados_atuais.items():
 
 df_mapa = pd.DataFrame(dados_mapa)
 
-# Renderiza o mapa usando Plotly Express Choropleth
 fig = px.choropleth(
     df_mapa,
     geojson=geojson_brasil,
