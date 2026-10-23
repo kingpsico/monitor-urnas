@@ -37,7 +37,7 @@ DADOS_ESTADOS_1_TURNO = {
     "RR": {"votos_esperados": 300_000,  "pct_a": 25.0, "pct_b": 75.0}
 }
 
-# Carrega o contorno geográfico localmente sem depender da internet externa
+# Carrega o contorno geográfico localmente
 @st.cache_data
 def carregar_geojson_local():
     with open("mapa.geojson", "r", encoding="utf-8") as f:
@@ -195,8 +195,16 @@ fig.update_layout(
     margin={"r":0,"t":0,"l":0,"b":0},
     coloraxis_showscale=False,
     height=500,
-    geo=dict(bgcolor='rgba(0,0,0,0)'),
-    paper_bgcolor='rgba(0,0,0,0)'
+    paper_bgcolor='rgba(0,0,0,0)',
+    plot_bgcolor='rgba(0,0,0,0)',
+    geo=dict(
+        showocean=True,
+        oceancolor='rgba(0,0,0,0)',
+        showlakes=False,
+        showland=False,
+        bgcolor='rgba(0,0,0,0)',
+        visible=False
+    )
 )
 
 st.plotly_chart(fig, use_container_width=True)
