@@ -134,7 +134,7 @@ with col1:
     st.markdown("### 🗳️ Placar Parcial Geral (Sem Filtro Regional)")
     st.progress(progresso / 100, text=f"Urnas Brasileiras Apuradas: {progresso}%")
     st.metric(label="🔴 Lula (Votos Reais Computados)", value=f"{votos_totais_lula:,}", delta=f"{pct_nacional_lula:.2f}%" if progresso > 0 else "50.00%")
-    st.metric(label="🔵 Flávio Bolsonaro (Votos Reais Computados)", value=f"{votos_totais_flavio:,}", delta=f"{pct_nacional_flavio:.2f}%" if progresso > 0 else "50.00%")
+    st.metric(label="🟢 Flávio Bolsonaro (Votos Reais Computados)", value=f"{votos_totais_flavio:,}", delta=f"{pct_nacional_flavio:.2f}%" if progresso > 0 else "50.00%")
 
 with col2:
     st.markdown("### 🧠 Projeção Ponderada por Estado (Previsão Final)")
@@ -178,13 +178,14 @@ for uf, d in dados_atuais.items():
 
 df_mapa = pd.DataFrame(dados_mapa)
 
+# Escala alterada para Vermelho (Lula) e Verde (Flávio Bolsonaro)
 fig = px.choropleth(
     df_mapa,
     geojson=geojson_brasil,
     locations="id",
     featureidkey="properties.sigla",
     color="Vantagem Cor",
-    color_continuous_scale=[[0.0, "red"], [0.5, "#444444"], [1.0, "blue"]],
+    color_continuous_scale=[[0.0, "red"], [0.5, "#888888"], [1.0, "green"]],
     range_color=[-1, 1],
     hover_data={"Estado": True, "Apurado": True, "Líder Atual": True, "Votos Lula": True, "Votos Flávio": True, "Vantagem Cor": False},
     labels={"Apurado": "Urnas Apuradas"}
@@ -195,14 +196,14 @@ fig.update_layout(
     margin={"r":0,"t":0,"l":0,"b":0},
     coloraxis_showscale=False,
     height=500,
-    paper_bgcolor='rgba(0,0,0,0)',
-    plot_bgcolor='rgba(0,0,0,0)',
+    paper_bgcolor='#E5E5E5',  # Fundo quadrado cinza claro
+    plot_bgcolor='#E5E5E5',   # Área interna cinza claro
     geo=dict(
         showocean=True,
-        oceancolor='rgba(0,0,0,0)',
+        oceancolor='#E5E5E5', # Oceano cinza claro
         showlakes=False,
         showland=False,
-        bgcolor='rgba(0,0,0,0)',
+        bgcolor='#E5E5E5',    # Base do mapa cinza claro
         visible=False
     )
 )
