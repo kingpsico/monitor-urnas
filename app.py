@@ -38,11 +38,15 @@ DADOS_ESTADOS_1_TURNO = {
     "RR": {"votos_esperados": 300_000,  "pct_a": 25.0, "pct_b": 75.0}
 }
 
-# Carrega o contorno geográfico dos estados do Brasil de forma rápida
+# Carrega o contorno geográfico dos estados do Brasil injetando cabeçalho de segurança
 @st.cache_data
 def carregar_geojson():
     url = "https://githubusercontent.com"
-    with urllib.request.urlopen(url) as response:
+    req = urllib.request.Request(
+        url, 
+        headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    )
+    with urllib.request.urlopen(req) as response:
         return json.loads(response.read().decode())
 
 geojson_brasil = carregar_geojson()
@@ -116,7 +120,7 @@ st.set_page_config(page_title="Monitor Estatístico de Urnas", page_icon="🔮",
 st.title("🔮 Monitor de Urnas com Projeção por Estado")
 st.subheader("Visualização geopolítica e eliminação de viés de apuração em tempo real")
 
-st.sidebar.header("🕹 Orograph de Controle")
+st.sidebar.header("🕹️ Painel de Controle")
 progresso = st.sidebar.slider("Porcentagem geral de urnas abertas:", 0, 100, 0, step=5)
 
 # Processamento
@@ -141,7 +145,7 @@ with col1:
 with col2:
     st.markdown("### 🧠 Projeção Ponderada por Estado (Previsão Final)")
     if progresso == 0:
-        st.info("📊 Aguardando abertura das urnas. Modelo inicializado em estabilidade absoluta.")
+        st.info("📊 Aguardando abertura das urnas. Modelo inicializado em estabilidade absoluta (50/50).")
     elif progresso < 10:
         st.warning("⚠️ Aguarde pelo menos 10% das urnas para estabilizar o cálculo regional.")
     else:
@@ -159,15 +163,14 @@ for uf, d in dados_atuais.items():
     votos_l = d["votos_a"]
     votos_f = d["votos_b"]
     
-    # Lógica de coloração baseada em quem está ganhando naquele momento
     if votos_l == 0 and votos_f == 0:
-        vantagem_cor = 0  # Cinza neutro no início
+        vantagem_cor = 0  
         lider = "Nenhum voto"
     elif votos_l > votos_f:
-        vantagem_cor = -1 # Vermelho para Lula
+        vantagem_cor = -1 
         lider = "Lula"
     else:
-        vantagem_cor = 1  # Azul para Flávio Bolsonaro
+        vantagem_cor = 1  
         lider = "Flávio Bolsonaro"
         
     dados_mapa.append({
@@ -182,7 +185,7 @@ for uf, d in dados_atuais.items():
 
 df_mapa = pd.DataFrame(dados_mapa)
 
-# Renderiza o mapa do Brasil usando Plotly Express Choropleth
+# Renderiza o mapa usando Plotly Express Choropleth
 fig = px.choropleth(
     df_mapa,
     geojson=geojson_brasil,
@@ -219,5 +222,3 @@ for uf, d in dados_atuais.items():
         "Votos Flávio Bolsonaro": f"{d['votos_b']:,}"
     })
 st.table(lista_estados)
-
-
