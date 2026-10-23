@@ -1,87 +1,152 @@
 import streamlit as st
 import time
-import random
 
-# ==========================================
-# 1. COLETA E SIMULAÇÃO DE DADOS
-# ==========================================
-def buscar_dados_urnas(progresso_atual):
-    total_votos_validos = 100_000_000
-    votos_apurados_ate_agora = int(total_votos_validos * (progresso_atual / 100))
+# ==============================================================================
+# DATABASES: MATRIZ DE PESOS DOS ESTADOS (BASEADO NO 1º TURNO DE 2026)
+# ==============================================================================
+# Valores de exemplo aproximados do peso eleitoral e comportamento do 1º turno
+DADOS_ESTADOS_1_TURNO = {
+    "SP": {"votos_esperados": 27_000_000, "pct_a": 48.0, "pct_b": 52.0},
+    "MG": {"votos_esperados": 12_000_000, "pct_a": 51.0, "pct_b": 49.0},
+    "RJ": {"votos_esperados": 10_000_000, "pct_a": 45.0, "pct_b": 55.0},
+    "BA": {"votos_esperados": 9_000_000, "pct_a": 68.0, "pct_b": 32.0},
+    "RS": {"votos_esperados": 7_000_000, "pct_a": 42.0, "pct_b": 58.0},
+    "PR": {"votos_esperados": 7_000_000, "pct_a": 40.0, "pct_b": 60.0},
+    "PE": {"votos_esperados": 5_500_000, "pct_a": 65.0, "pct_b": 35.0},
+    "CE": {"votos_esperados": 5_300_000, "pct_a": 66.0, "pct_b": 34.0},
+    "PA": {"votos_esperados": 4_800_000, "pct_a": 54.0, "pct_b": 46.0},
+    "MA": {"votos_esperados": 4_000_000, "pct_a": 67.0, "pct_b": 33.0},
+    "SC": {"votos_esperados": 4_500_000, "pct_a": 31.0, "pct_b": 69.0},
+    "GO": {"votos_esperados": 4_000_000, "pct_a": 41.0, "pct_b": 59.0},
+    "PB": {"votos_esperados": 2_600_000, "pct_a": 64.0, "pct_b": 36.0},
+    "RN": {"votos_esperados": 2_200_000, "pct_a": 63.0, "pct_b": 37.0},
+    "AL": {"votos_esperados": 1_900_000, "pct_a": 58.0, "pct_b": 42.0},
+    "PI": {"votos_esperados": 2_100_000, "pct_a": 74.0, "pct_b": 26.0},
+    "MT": {"votos_esperados": 2_200_000, "pct_a": 35.0, "pct_b": 65.0},
+    "DF": {"votos_esperados": 1_800_000, "pct_a": 39.0, "pct_b": 61.0},
+    "ES": {"votos_esperados": 2_300_000, "pct_a": 43.0, "pct_b": 57.0},
+    "AM": {"votos_esperados": 2_100_000, "pct_a": 50.0, "pct_b": 50.0},
+    "MS": {"votos_esperados": 1_600_000, "pct_a": 38.0, "pct_b": 62.0},
+    "SE": {"votos_esperados": 1_300_000, "pct_a": 62.0, "pct_b": 38.0},
+    "RO": {"votos_esperados": 1_000_000, "pct_a": 30.0, "pct_b": 70.0},
+    "TO": {"votos_esperados": 900_000,  "pct_a": 52.0, "pct_b": 48.0},
+    "AC": {"votos_esperados": 500_000,  "pct_a": 28.0, "pct_b": 72.0},
+    "AP": {"votos_esperados": 500_000,  "pct_a": 46.0, "pct_b": 54.0},
+    "RR": {"votos_esperados": 300_000,  "pct_a": 25.0, "pct_b": 75.0}
+}
+
+# ==============================================================================
+# 1. SIMULADOR INTELIGENTE DE RITMO REGIONAL
+# ==============================================================================
+def buscar_dados_urnas_por_estado(progresso_geral):
+    """
+    Simula a apuração avançando de forma desigual entre os estados.
+    Estados do Sul/Sudeste começam apurando mais rápido neste exemplo.
+    """
+    dados_apuracao_estados = {}
     
-    if progresso_atual < 50:
-        percentual_a = 0.54 - (progresso_atual * 0.001)
-    else:
-        percentual_a = 0.49 + ((100 - progresso_atual) * 0.001)
+    for uf, info in DADOS_ESTADOS_1_TURNO.items():
+        # Define ritmos de velocidade diferentes por região para testar o modelo
+        if uf in ["SP", "PR", "SC", "RS"]:
+            progresso_uf = min(100, progresso_geral * 1.3)
+        elif uf in ["BA", "PE", "MA", "PI"]:
+            progresso_uf = max(0, min(100, (progresso_geral - 10) * 1.1))
+        else:
+            progresso_uf = progresso_geral
+            
+        votos_apurados = int(info["votos_esperados"] * (progresso_uf / 100))
+        votos_a = int(votos_apurados * (info["pct_a"] / 100))
+        votos_b = votos_apurados - votos_a
         
-    percentual_b = 1.0 - percentual_a
-    votos_a = int(votos_apurados_ate_agora * percentual_a)
-    votos_b = int(votos_apurados_ate_agora * percentual_b)
-    
-    return {
-        "urnas_apuradas_percentual": progresso_atual,
-        "votos_total_apurados": votos_apurados_ate_agora,
-        "candidato_a_votos": votos_a,
-        "candidato_b_votos": votos_b
-    }
+        dados_apuracao_estados[uf] = {
+            "progresso_uf": progresso_uf,
+            "votos_total_esperados": info["votos_esperados"],
+            "votos_apurados": votos_apurados,
+            "votos_a": votos_a,
+            "votos_b": votos_b
+        }
+    return dados_apuracao_estados
 
-# ==========================================
-# 2. INTELIGÊNCIA E PROJEÇÃO ESTATÍSTICA
-# ==========================================
-def calcular_projecao_final(dados_parciais):
-    porcentagem_aberta = dados_parciais["urnas_apuradas_percentual"]
-    votos_a = dados_parciais["candidato_a_votos"]
-    votos_b = dados_parciais["candidato_b_votos"]
+# ==============================================================================
+# 2. ALGORITMO DE PROJEÇÃO PONDERADA ESTADUAL ("NÍVEL NASA")
+# ==============================================================================
+def calcular_projecao_ponderada(dados_estados):
+    projecao_votos_totais_a = 0
+    projecao_votos_totais_b = 0
     
-    if porcentagem_aberta == 0:
+    for uf, dados in dados_estados.items():
+        votos_ja_apurados_a = dados["votos_a"]
+        votos_ja_apurados_b = dados["votos_b"]
+        votos_restantes = dados["votos_total_esperados"] - dados["votos_apurados"]
+        
+        # Tendência histórica do 1º Turno para o cálculo do que falta apurar
+        pct_historico_a = DADOS_ESTADOS_1_TURNO[uf]["pct_a"] / 100
+        pct_historico_b = DADOS_ESTADOS_1_TURNO[uf]["pct_b"] / 100
+        
+        # Projeta os votos que faltam usando a tendência local daquele estado
+        votos_projetados_a = votos_ja_apurados_a + (votos_restantes * pct_historico_a)
+        votos_projetados_b = votos_ja_apurados_b + (votos_restantes * pct_historico_b)
+        
+        projecao_votos_totais_a += votos_projetados_a
+        projecao_votos_totais_b += votos_projetados_b
+        
+    soma_total = projecao_votos_totais_a + projecao_votos_totais_b
+    if soma_total == 0:
         return 50.0, 50.0
         
-    fator_confianca = porcentagem_aberta / 100.0
-    total_votos_parcial = votos_a + votos_b
-    pct_atual_a = votos_a / total_votos_parcial if total_votos_parcial > 0 else 0.5
-    pct_atual_b = votos_b / total_votos_parcial if total_votos_parcial > 0 else 0.5
-    
-    projecao_a = (pct_atual_a * fator_confianca) + (0.50 * (1 - fator_confianca))
-    projecao_b = (pct_atual_b * fator_confianca) + (0.50 * (1 - fator_confianca))
-    
-    soma = projecao_a + projecao_b
-    return (projecao_a / soma) * 100, (projecao_b / soma) * 100
+    return (projecao_votos_totais_a / soma_total) * 100, (projecao_votos_totais_b / soma_total) * 100
 
-# ==========================================
-# 3. INTERFACE VISUAL DO AGENTE
-# ==========================================
-st.set_page_config(page_title="Monitor de Urnas em Tempo Real", page_icon="📊", layout="wide")
+# ==============================================================================
+# 3. INTERFACE VISUAL DO SISTEMA
+# ==============================================================================
+st.set_page_config(page_title="Monitor Estatístico de Urnas", page_icon="🔮", layout="wide")
 
-st.title("📊 Monitor de Urnas & Projeção Estatística")
-st.subheader("Acompanhe a apuração e a previsão do resultado final em tempo real")
+st.title("🔮 Monitor de Urnas com Projeção Ponderada por Estado")
+st.subheader("Algoritmo de eliminação de viés de apuração regional")
 
-st.sidebar.header("🕹️ Controle de Fluxo")
-progresso = st.sidebar.slider("Porcentagem de urnas abertas:", 0, 100, 0, step=5)
+st.sidebar.header("🕹️ Painel de Controle")
+progresso = st.sidebar.slider("Porcentagem geral de urnas abertas:", 0, 100, 0, step=5)
 
-dados = buscar_dados_urnas(progresso)
-proj_a, proj_b = calcular_projecao_final(dados)
+# Processamento dos Modelos
+dados_atuais = buscar_dados_urnas_por_estado(progresso)
+proj_a, proj_b = calcular_projecao_ponderada(dados_atuais)
 
+# Consolidação Nacional Atual
+votos_totais_a = sum(d["votos_a"] for d in dados_atuais.values())
+votos_totais_b = sum(d["votos_b"] for d in dados_atuais.values())
+votos_totais_geral = votos_totais_a + votos_totais_b
+
+pct_nacional_a = (votos_totais_a / votos_totais_geral * 100) if votos_totais_geral > 0 else 0
+pct_nacional_b = (votos_totais_b / votos_totais_geral * 100) if votos_totais_geral > 0 else 0
+
+# Exibição dos Blocos Principais
 col1, col2 = st.columns(2)
 
 with col1:
-    st.markdown("### 🗳️ Resultado Parcial Atual")
-    st.progress(progresso / 100, text=f"Urnas Apuradas: {progresso}%")
-    
-    total_votos_atual = dados["votos_total_apurados"]
-    pct_atual_a = (dados["candidato_a_votos"] / total_votos_atual * 100) if total_votos_atual > 0 else 0
-    pct_atual_b = (dados["candidato_b_votos"] / total_votos_atual * 100) if total_votos_atual > 0 else 0
-    
-    st.metric(label="🟢 Candidato A (Votos Atuais)", value=f"{dados['candidato_a_votos']:,}", delta=f"{pct_atual_a:.2f}%")
-    st.metric(label="🔵 Candidato B (Votos Atuais)", value=f"{dados['candidato_b_votos']:,}", delta=f"{pct_atual_b:.2f}%")
+    st.markdown("### 🗳️ Placar Parcial Geral (Sem Filtro Regional)")
+    st.progress(progresso / 100, text=f"Urnas Brasileiras Apuradas: {progresso}%")
+    st.metric(label="🟢 Candidato A (Votos Reais Computados)", value=f"{votos_totais_a:,}", delta=f"{pct_nacional_a:.2f}%")
+    st.metric(label="🔵 Candidato B (Votos Reais Computados)", value=f"{votos_totais_b:,}", delta=f"{pct_nacional_b:.2f}%")
 
 with col2:
-    st.markdown("### 🔮 Projeção Matemático-Estatística")
-    if progresso < 15:
-        st.warning("⚠️ Dados insuficientes para uma projeção confiável. Aguarde mais urnas.")
+    st.markdown("### 🧠 Projeção Ponderada por Estado (Previsão Final)")
+    if progresso < 10:
+        st.warning("⚠️ Aguarde pelo menos 10% das urnas para estabilizar o cálculo regional.")
     else:
-        st.success("✅ Tendência estatística calculada com sucesso!")
-        
-    st.metric(label="🔮 Candidato A (Resultado Final Estimado)", value=f"{proj_a:.2f}%")
-    st.metric(label="🔮 Candidato B (Resultado Final Estimado)", value=f"{proj_b:.2f}%")
+        st.success("✅ Modelo matemático calculando pesos com estabilidade.")
+    st.metric(label="🔮 Candidato A (Resultado Final Projetado)", value=f"{proj_a:.2f}%")
+    st.metric(label="🔮 Candidato B (Resultado Final Projetado)", value=f"{proj_b:.2f}%")
 
-st.info("💡 Este sistema está rodando em modo simulação. Para usar com dados reais de eleições, basta integrar a URL da API oficial à função de busca de dados.")
+# Tabela Detalhada por Estado na parte inferior do painel
+st.write("---")
+st.markdown("### 🗺️ Status da Apuração por Estado")
+lista_estados = []
+for uf, d in dados_atuais.items():
+    lista_estados.append({
+        "Estado": uf,
+        "Progresso": f"{d['progresso_uf']:.1f}%",
+        "Votos Apurados": f"{d['votos_apurados']:,}",
+        "Votos Cand. A": f"{d['votos_a']:,}",
+        "Votos Cand. B": f"{d['votos_b']:,}"
+    })
+st.table(lista_estados)
