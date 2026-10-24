@@ -124,9 +124,9 @@ def processar_modelos_eleitorais(dados_estados, progresso_geral):
 # ==============================================================================
 st.set_page_config(page_title="Monitor Estatístico de Urnas", page_icon="🔮", layout="wide")
 
-# CRONÔMETRO DE ATUALIZAÇÃO AUTOMÁTICA (Roda a cada 30000 milissegundos = 30 segundos)
+# CRONÔMETRO DE ATUALIZAÇÃO AUTOMÁTICA (Roda a cada 20000 milissegundos = 20 segundos)
 # O próprio Streamlit cuida do loop sem travar o navegador
-st.fragment(run_every=30)
+st.fragment(run_every=20)
 
 st.title("🔮 Monitor de Urnas com Projeção por Estado")
 st.subheader("Visualização geopolítica e eliminação de viés de apuração em tempo real")
@@ -137,7 +137,7 @@ modo_sistema = st.sidebar.radio("Selecione o modo de operação:", ["Simulador (
 if modo_sistema == "AO VIVO (Dados Reais do TSE)":
     progresso_visual = 0
     dados_processados = buscar_dados_simulados(0) 
-    st.sidebar.caption("📡 Atualizando dados em tempo real automaticamente a cada 30s.")
+    st.sidebar.caption("📡 Atualizando dados em tempo real automaticamente a cada 20s.")
 else:
     progresso_visual = st.sidebar.slider("Porcentagem geral de urnas abertas:", 0, 100, 0, step=5)
     dados_processados = buscar_dados_simulados(progresso_visual)
