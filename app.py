@@ -461,4 +461,530 @@ def carregar_simulado(progresso, desvio_pp):
         "pct_secoes": float(progresso),
         "secoes_total": 27_000,
         "secoes_apuradas": int(270 * progresso),
-        "atualizado_em": f"SIMULADO
+        "atualizado_em": f"SIMULADO {progresso}",
+        "url": "",
+    }
+    status = "aguardando" if progresso <= 0 else ("concluido" if progresso >= 100 else "apurando")
+    return {
+        "status": status,
+        "eleicao": None,
+        "nacional": nacional,
+        "unidades": unidades,
+        "erros": [],
+        "r1": {},
+    }
+
+
+# ==========================================================
+# MOTOR DE ANÁLISE E PROJEÇÃO (ativo, estado a estado)
+# ==========================================================
+# Ideia central:
+#  1) Cada estado tem uma BASE (previsão/1º turno): total esperado T0 e % de Lula s0.
+#  2) Conforme as urnas abrem, mede-se o DESVIO de cada estado em relação à base
+#     (em escala logit, para não estourar 0%/100%) e a razão de COMPARECIMENTO
+#     (votos apurados / % de seções, comparado a T0).
+#  3) Esses desvios viram um "clima" (swing) NACIONAL e REGIONAL, ponderados pelos
+#     votos já apurados e pela abertura de cada estado (estado com mais urnas abertas
+#     pesa mais). O próprio estado é excluído do clima que o afeta.
+#  4) Para cada estado, o que falta apurar recebe: o desvio do próprio estado (peso w,
+#     que cresce com a abertura das urnas) + o clima regional/nacional (peso 1 - w).
+#     Assim, estado com 0% apurado já se move pelo que os outros mostram.
+#  5) Com 100% apurado, vale só o voto real.
+#  O parâmetro m (confiança na previsão) controla a velocidade: w = p / (p + m(1-p)).
+def motor(unidades, bases, m):
+    info = {}
+    for uf in UNIDADES:
+        d = unidades.get(uf)
+        base = bases.get(uf)
+        p = max(0.0, min(1.0, d["pct_secoes"] / 100)) if d else 0.0
+        a = max(0, d["lula_real"]) if d else 0
+        b = max(0, d["flavio_real"]) if d else 0
+        v = a + b
+        i = {"uf": uf, "base": base, "p": p, "a": a, "b": b, "v": v, "usavel": False, "w": 0.0}
+        if base and d and p >= MIN_PROGRESSO and v > 0:
+            w = p / (p + m * (1 - p)) if p < 1 else 1.0
+            s_obs = min(max(a / v, 1e-3), 1 - 1e-3)
+            i.update(
+                usavel=True,
+                w=w,
+                s_obs=s_obs,
+                dev=logit(s_obs) - logit(base["s0"]),
+                lr=math.log(min(max((v / p) / base["T0"], 0.5), 1.6)),
+                cw=v * w,
+            )
+        info[uf] = i
+
+    def somar(ufs):
+        S = {"cw": 0.0, "cwd": 0.0, "cwlr": 0.0, "v": 0.0, "T0": 0.0}
+        for uf in ufs:
+            i = info[uf]
+            if i["base"]:
+                S["T0"] += i["base"]["T0"]
+            if i["usavel"]:
+                S["cw"] += i["cw"]
+                S["cwd"] += i["cw"] * i["dev"]
+                S["cwlr"] += i["cw"] * i["lr"]
+                S["v"] += i["v"]
+        return S
+
+    def sem(S, i):
+        R = dict(S)
+        if i["base"]:
+            R["T0"] -= i["base"]["T0"]
+        if i["usavel"]:
+            R["cw"] -= i["cw"]
+            R["cwd"] -= i["cw"] * i["dev"]
+            R["cwlr"] -= i["cw"] * i["lr"]
+            R["v"] -= i["v"]
+        return R
+
+    def clima(S):
+        if S["cw"] <= 1e-9 or S["T0"] <= 0:
+            return 0.0, 0.0, 0.0
+        P = min(1.0, max(0.0, S["v"] / S["T0"]))
+        kappa = P / (P + m * (1 - P)) if P < 1 else 1.0
+        return S["cwd"] / S["cw"], S["cwlr"] / S["cw"], kappa
+
+    TOT = somar(UNIDADES)
+    REG = {r: somar(ufs) for r, ufs in REGIOES.items()}
+
+    linhas = []
+    for uf in UNIDADES:
+        i = info[uf]
+        base, p, a, b, v = i["base"], i["p"], i["a"], i["b"], i["v"]
+
+        Dn, Ln, kn = clima(sem(TOT, i))
+        Dn, Ln = Dn * kn, Ln * kn
+        Dr, Lr, kr = clima(sem(REG[REGIAO_DE[uf]], i))
+        D_ctx = kr * Dr + (1 - kr) * Dn
+        L_ctx = kr * Lr + (1 - kr) * Ln
+
+        s_rest = None
+        if base is None:
+            # Sem previsão: só extrapola os votos reais (se houver).
+            if v > 0 and p > 0:
+                total = max(v / p, v)
+                s_rest = a / v
+                pa, pb = a + (total - v) * s_rest, b + (total - v) * (1 - s_rest)
+                metodo = "Extrapolação dos votos reais (sem previsão)"
+            else:
+                pa = pb = 0.0
+                metodo = "Sem dados e sem previsão"
+            t0, s0, w_uso, ajuste = 0.0, None, 0.0, None
+        elif v > 0 and p >= 0.9999:
+            pa, pb = float(a), float(b)
+            metodo = "Resultado real (totalização concluída)"
+            t0, s0, w_uso, ajuste = base["T0"], base["s0"], 1.0, None
+        else:
+            t0, s0 = base["T0"], base["s0"]
+            if i["usavel"]:
+                w = i["w"]
+                swing = w * i["dev"] + (1 - w) * D_ctx
+                lrf = w * i["lr"] + (1 - w) * L_ctx
+                metodo = "Real do estado + clima regional/nacional"
+            else:
+                w = 0.0
+                swing, lrf = D_ctx, L_ctx
+                if D_ctx == 0.0 and L_ctx == 0.0:
+                    metodo = "Previsão-base (ainda sem urnas no país)"
+                else:
+                    metodo = "Previsão-base corrigida pelo clima regional/nacional"
+            s_rest = inv_logit(logit(s0) + swing)
+            total = t0 * math.exp(lrf)
+            if p < 0.9:
+                total = min(max(total, 0.7 * t0), 1.3 * t0)
+            total = max(total, v)
+            resto = total - v
+            pa = a + resto * s_rest
+            pb = b + resto * (1 - s_rest)
+            w_uso = w
+            ajuste = (s_rest - s0) * 100
+
+        tot_proj = pa + pb
+        pct_a = pa / tot_proj * 100 if tot_proj else 0.0
+        pct_b = pb / tot_proj * 100 if tot_proj else 0.0
+        lider_base = None
+        if s0 is not None:
+            lider_base = "Lula" if s0 > 0.5 else "Flávio"
+        lider_proj = "Lula" if pa > pb else ("Flávio" if pb > pa else "Empate")
+        d = unidades.get(uf)
+        linhas.append(
+            {
+                "UF": "ZZ (Exterior)" if uf == "ZZ" else uf,
+                "uf": uf,
+                "regiao": REGIAO_DE[uf],
+                "votos_previstos": t0,
+                "pct_secoes": d["pct_secoes"] if d else 0.0,
+                "secoes_apuradas": d["secoes_apuradas"] if d else 0,
+                "secoes_total": d["secoes_total"] if d else 0,
+                "lula_real": a,
+                "flavio_real": b,
+                "pct_a_base": s0 * 100 if s0 is not None else None,
+                "proj_lula": pa,
+                "proj_flavio": pb,
+                "pct_proj_lula": pct_a,
+                "pct_proj_flavio": pct_b,
+                "desvio_lula_pp": (pct_a - s0 * 100) if (s0 is not None and tot_proj) else None,
+                "ajuste_resto_pp": ajuste,
+                "peso_real": w_uso * 100,
+                "lider_base": lider_base,
+                "lider_proj": lider_proj,
+                "virou": bool(lider_base and tot_proj and lider_proj not in (lider_base, "Empate")),
+                "metodo": metodo,
+                "sem_dado": d is None,
+                "obsoleto": bool(d and d.get("obsoleto")),
+            }
+        )
+
+    # ---- resumo do clima (para o painel) ----
+    def resumo(ufs):
+        S = somar(ufs)
+        if S["cw"] <= 1e-9:
+            return None
+        dev_pp = sum(
+            info[u]["cw"] * (info[u]["s_obs"] - info[u]["base"]["s0"]) * 100
+            for u in ufs
+            if info[u]["usavel"]
+        ) / S["cw"]
+        fator = math.exp(S["cwlr"] / S["cw"])
+        return {
+            "desvio_pp": dev_pp,
+            "comparecimento": fator,
+            "votos_apurados_pct": S["v"] / S["T0"] * 100 if S["T0"] else 0.0,
+        }
+
+    clima_resumo = {"Brasil": resumo(UNIDADES)}
+    for r, ufs in REGIOES.items():
+        clima_resumo[r] = resumo(ufs)
+    return pd.DataFrame(linhas), clima_resumo
+
+
+@st.cache_resource
+def _historico():
+    return {"series": {}, "lock": threading.Lock()}
+
+
+def registrar_historico(chave, nacional, total_a, total_b):
+    h = _historico()
+    pct_a = total_a / (total_a + total_b) * 100 if (total_a + total_b) else 0
+    ponto = {
+        "carimbo": nacional.get("atualizado_em", ""),
+        "Hora": datetime.now(TZ).strftime("%H:%M:%S"),
+        "Seções apuradas %": nacional["pct_secoes"],
+        "Lula projeção %": pct_a,
+        "Flávio projeção %": 100 - pct_a,
+        "Diferença projetada (Lula − Flávio)": total_a - total_b,
+    }
+    with h["lock"]:
+        serie = h["series"].setdefault(chave, [])
+        k = "Diferença projetada (Lula − Flávio)"
+        if not serie or serie[-1]["carimbo"] != ponto["carimbo"] or abs(serie[-1][k] - ponto[k]) > 1:
+            serie.append(ponto)
+            del serie[:-3000]
+        return list(serie)
+
+
+# ==========================================================
+# INTERFACE
+# ==========================================================
+def mostrar_df(df):
+    try:
+        st.dataframe(df, width="stretch", hide_index=True)
+    except Exception:
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+def painel(modo, escala, m, modo_base, prog_sim, desvio_sim):
+    agora = datetime.now(TZ)
+    st.caption(f"Última atualização do painel: {agora.strftime('%d/%m/%Y %H:%M:%S')} (Brasília)")
+
+    # ---------- carga ----------
+    if modo == MODO_SIM:
+        dados = carregar_simulado(prog_sim, desvio_sim)
+        st.warning(
+            "MODO SIMULADOR: números fictícios (cada estado abre num ritmo diferente, com "
+            "comparecimento 7% menor que o previsto e o desvio escolhido). Mexa nos controles "
+            "laterais para ver o motor reagir."
+        )
+    elif modo == MODO_ENSAIO:
+        dados = carregar_oficial(ELEICAO_1T)
+        st.warning(
+            "MODO ENSAIO: dados REAIS e já encerrados do 1º turno, só para testar a leitura do "
+            "TSE. Como estão 100% apurados, a projeção não se move aqui; para ver o motor "
+            "reagindo use o Simulador. Os números NÃO são do 2º turno."
+        )
+    else:
+        dados = carregar_oficial()
+
+    status = dados["status"]
+    nacional = dados["nacional"]
+    bases = construir_bases(escala, dados["r1"], modo_base)
+    df, clima_resumo = motor(dados["unidades"], bases, m)
+
+    # ---------- faixa de status ----------
+    if status == "aguardando":
+        if modo == MODO_OFICIAL and agora < INICIO_DIVULGACAO:
+            falta = INICIO_DIVULGACAO - agora
+            h, resto = divmod(int(falta.total_seconds()), 3600)
+            mi, s = divmod(resto, 60)
+            st.info(
+                f"⏳ Aguardando o início da divulgação do TSE (a partir das 17h de 25/10). "
+                f"Faltam {h:02d}h{mi:02d}min{s:02d}s. O app consulta o TSE sozinho a cada "
+                f"{INTERVALO_ATUALIZACAO}s e começa a apuração automaticamente. Até lá, a "
+                "projeção mostrada é só a previsão-base."
+            )
+        else:
+            st.info(
+                "⏳ Arquivos de apuração ainda não publicados pelo TSE (ou ainda sem votos). "
+                "O app continua tentando sozinho. A projeção é só a previsão-base."
+            )
+    elif status == "apurando":
+        st.success("🟢 Apuração em andamento — projeção recalculada a cada atualização.")
+    else:
+        st.success("🏁 Totalização concluída — valores finais baseados nos votos reais.")
+
+    total_a = float(df["proj_lula"].sum())
+    total_b = float(df["proj_flavio"].sum())
+    total_proj = total_a + total_b
+    pct_a = total_a / total_proj * 100 if total_proj else 0
+    pct_b = total_b / total_proj * 100 if total_proj else 0
+    diferenca = abs(total_a - total_b)
+
+    # ---------- 1. consolidado nacional ----------
+    st.subheader("1. Consolidado nacional (votos reais apurados)")
+    if nacional:
+        real_a, real_b = nacional["lula_real"], nacional["flavio_real"]
+        pct_sec = nacional["pct_secoes"]
+        sec_ap, sec_tot = nacional["secoes_apuradas"], nacional["secoes_total"]
+    else:
+        real_a = real_b = 0
+        pct_sec, sec_ap, sec_tot = 0.0, 0, 0
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(
+        "Seções apuradas",
+        fmt_pct(pct_sec),
+        f"{fmt_num(sec_ap)} de {fmt_num(sec_tot)}" if sec_tot else None,
+    )
+    c2.metric("Lula — votos reais", fmt_num(real_a))
+    c3.metric("Flávio — votos reais", fmt_num(real_b))
+    lidos = int((~df["sem_dado"]).sum())
+    c4.metric("Unidades com dados", f"{lidos} de {len(UNIDADES)}")
+
+    if nacional and modo != MODO_SIM:
+        soma_real = int(df["lula_real"].sum() + df["flavio_real"].sum())
+        nac_total = real_a + real_b
+        if nac_total > 0 and abs(soma_real - nac_total) / nac_total > 0.005:
+            st.warning(
+                f"Atenção: a soma das 28 unidades ({fmt_num(soma_real)} votos) difere do total "
+                f"nacional do TSE ({fmt_num(nac_total)}). Pode ser atraso entre arquivos."
+            )
+
+    # ---------- 2. projeção ----------
+    st.subheader("2. Projeção final do motor (ativa)")
+    p1, p2, p3 = st.columns(3)
+    p1.metric("Lula — projeção", fmt_num(total_a), fmt_pct(pct_a))
+    p2.metric("Flávio Bolsonaro — projeção", fmt_num(total_b), fmt_pct(pct_b))
+    if total_a > total_b:
+        lider = "Lula à frente na projeção"
+    elif total_b > total_a:
+        lider = "Flávio à frente na projeção"
+    else:
+        lider = "Empate na projeção"
+    p3.metric("Diferença projetada", fmt_num(diferenca), lider)
+
+    a_apurar = max(0.0, total_proj - (real_a + real_b)) if nacional else total_proj
+    q1, q2, q3 = st.columns(3)
+    q1.metric("Votos a apurar (estimado)", fmt_num(a_apurar))
+    q2.metric("Total projetado de votos", fmt_num(total_proj))
+    virou = df[df["virou"]]["uf"].tolist()
+    q3.metric(
+        "Estados que virariam vs. base",
+        str(len(virou)),
+        ", ".join(virou) if virou else "nenhum",
+        delta_color="off",
+    )
+
+    # clima nacional
+    cn = clima_resumo.get("Brasil")
+    if cn:
+        k1, k2, k3 = st.columns(3)
+        k1.metric(
+            "Desvio de Lula vs. base (nas urnas abertas)",
+            f"{cn['desvio_pp']:+.2f}".replace(".", ",") + " p.p.",
+        )
+        k2.metric(
+            "Comparecimento vs. previsto",
+            fmt_pct(cn["comparecimento"] * 100),
+        )
+        k3.metric("Votos previstos já apurados", fmt_pct(cn["votos_apurados_pct"]))
+
+    if total_proj and diferenca / total_proj < 0.005:
+        st.warning(
+            "⚠️ Disputa muito apertada: diferença projetada menor que 0,5% dos votos, dentro "
+            "da margem de erro do modelo. Não trate como resultado."
+        )
+    st.caption(
+        "Percentuais calculados sobre a soma dos votos dos dois candidatos (27 UFs + Exterior). "
+        "Não são percentuais oficiais do TSE. Projeção = estimativa, não resultado oficial."
+    )
+
+    # ---------- 3. evolução ----------
+    if status != "aguardando" and nacional:
+        chave = f"{modo}|{dados['eleicao']}"
+        serie = registrar_historico(chave, nacional, total_a, total_b)
+        if len(serie) >= 2:
+            st.subheader("3. Evolução da projeção")
+            dh = pd.DataFrame(serie).set_index("Hora")
+            g1, g2 = st.columns(2)
+            g1.caption("Projeção % de cada candidato")
+            g1.line_chart(dh[["Lula projeção %", "Flávio projeção %"]])
+            g2.caption("Diferença projetada em votos (Lula − Flávio)")
+            g2.line_chart(dh[["Diferença projetada (Lula − Flávio)"]])
+
+    # ---------- 4. motor: clima por região ----------
+    st.subheader("4. Motor de análise — o que as urnas estão dizendo")
+    linhas_reg = []
+    for r in ["Brasil"] + list(REGIOES):
+        c = clima_resumo.get(r)
+        if c:
+            linhas_reg.append(
+                {
+                    "Região": r,
+                    "Votos previstos já apurados %": round(c["votos_apurados_pct"], 2),
+                    "Desvio de Lula vs. base (p.p.)": round(c["desvio_pp"], 2),
+                    "Comparecimento vs. previsto (%)": round(c["comparecimento"] * 100, 2),
+                }
+            )
+    if linhas_reg:
+        mostrar_df(pd.DataFrame(linhas_reg))
+    else:
+        st.write("Sem urnas apuradas ainda — o motor entra em ação assim que os primeiros dados chegarem.")
+    st.caption(
+        "Como funciona: cada estado é comparado com a sua base (previsão / 1º turno). O desvio "
+        "observado vira um 'clima' regional e nacional, ponderado pelos votos apurados e pela "
+        "abertura das urnas de cada estado. Esse clima corrige o que ainda falta apurar em todos "
+        "os estados, inclusive os que ainda não abriram. Quanto mais urnas abertas num estado, "
+        "mais o resultado real dele pesa sobre a própria projeção."
+    )
+
+    # ---------- 5. tabela ----------
+    st.subheader("5. Acompanhamento por estado")
+    tabela = pd.DataFrame(
+        {
+            "UF": df["UF"],
+            "Região": df["regiao"],
+            "Votos previstos base": df["votos_previstos"].round(0).astype("int64"),
+            "Seções apuradas %": df["pct_secoes"].round(2),
+            "Seções apuradas": df["secoes_apuradas"],
+            "Total de seções": df["secoes_total"],
+            "Lula votos reais": df["lula_real"],
+            "Flávio votos reais": df["flavio_real"],
+            "Lula base %": df["pct_a_base"].astype(float).round(2),
+            "Peso dos dados reais %": df["peso_real"].round(1),
+            "Ajuste no que falta (p.p. Lula)": df["ajuste_resto_pp"].astype(float).round(2),
+            "Lula projeção votos": df["proj_lula"].round(0).astype("int64"),
+            "Lula projeção %": df["pct_proj_lula"].round(2),
+            "Flávio projeção votos": df["proj_flavio"].round(0).astype("int64"),
+            "Flávio projeção %": df["pct_proj_flavio"].round(2),
+            "Desvio Lula vs base (p.p.)": df["desvio_lula_pp"].astype(float).round(2),
+            "Líder base": df["lider_base"],
+            "Líder projeção": df["lider_proj"],
+            "Método": df["metodo"],
+        }
+    ).sort_values("UF")
+    mostrar_df(tabela)
+
+    st.download_button(
+        "📥 Baixar tabela em CSV",
+        data=tabela.to_csv(index=False).encode("utf-8-sig"),
+        file_name="motor_eleitoral_2026.csv",
+        mime="text/csv",
+    )
+
+    # ---------- diagnóstico ----------
+    with st.expander("Diagnóstico técnico"):
+        st.write(f"Eleição TSE consultada: **{dados['eleicao']}**")
+        if nacional and nacional.get("url"):
+            st.write(f"Arquivo nacional: {nacional['url']}")
+            st.write(f"Carimbo do TSE: {nacional.get('atualizado_em') or 'n/d'}")
+        st.write(f"Base de previsão em uso: **{modo_base}**")
+        st.write(f"1º turno real carregado para {len(dados['r1'])} de {len(UNIDADES)} unidades.")
+        st.write(
+            "Unidades com dado desatualizado (usando última leitura boa): "
+            f"{int(df['obsoleto'].sum())}"
+        )
+        if "ZZ" not in bases:
+            st.write("Exterior (ZZ): sem base (1º turno indisponível); projetado só pelos votos reais.")
+        if dados["erros"]:
+            st.write("Falhas/avisos:")
+            st.code("\n".join(dados["erros"][:40]))
+    st.caption(
+        "Fonte dos resultados oficiais: TSE (resultados.tse.jus.br). Aplicativo independente; "
+        "não substitui a divulgação oficial."
+    )
+
+
+def main():
+    st.title("🗳️ Motor Eleitoral 2026 — 2º turno")
+    st.caption("A = Lula (13, PT)  |  B = Flávio Bolsonaro (22, PL)")
+
+    with st.sidebar:
+        st.header("Painel de controle")
+        modo = st.radio("Modo", [MODO_OFICIAL, MODO_ENSAIO, MODO_SIM], index=0)
+        modo_base = st.selectbox(
+            "Base da previsão",
+            BASES,
+            index=0,
+            help="'Minha previsão' usa os percentuais que você informou. As outras opções "
+            "usam (ou misturam) o resultado real do 1º turno lido do TSE.",
+        )
+        conf = st.select_slider(
+            "Confiança na previsão-base",
+            options=list(CONFIANCA),
+            value="Média",
+            help="Quanto menor, mais rápido os dados reais assumem o controle da projeção.",
+        )
+        escala_pct = st.slider(
+            "Ajuste dos totais previstos (%)",
+            min_value=80,
+            max_value=110,
+            value=100,
+            step=1,
+            help="100% = exatamente os totais informados. O motor já corrige o comparecimento "
+            "sozinho conforme as urnas abrem; use só para testar cenários.",
+        )
+        prog_sim, desvio_sim = 35, 0.0
+        if modo == MODO_SIM:
+            prog_sim = st.slider("Progresso fictício da apuração (%)", 0, 100, 35, 5)
+            desvio_sim = st.slider(
+                "Desvio fictício a favor de Lula (p.p.)", -10.0, 10.0, 3.0, 0.5
+            )
+        st.write(f"Atualização automática: {INTERVALO_ATUALIZACAO} s")
+        st.write("Abrangência: 27 UFs + Exterior")
+        st.markdown("[Portal oficial do TSE](https://resultados.tse.jus.br/)")
+
+    escala = escala_pct / 100
+    m = CONFIANCA[conf]
+
+    def corpo():
+        try:
+            painel(modo, escala, m, modo_base, prog_sim, desvio_sim)
+        except Exception as erro:  # nunca derrubar o painel
+            st.error(f"Erro ao atualizar o painel (nova tentativa automática): {erro}")
+
+    fragmento = getattr(st, "fragment", None) or getattr(st, "experimental_fragment", None)
+    if fragmento is not None:
+        try:
+            fragmento(run_every=INTERVALO_ATUALIZACAO)(corpo)()
+            return
+        except TypeError:
+            pass
+    # Fallback para versões antigas do Streamlit
+    corpo()
+    time.sleep(INTERVALO_ATUALIZACAO)
+    st.rerun()
+
+
+if __name__ == "__main__":
+    main()
