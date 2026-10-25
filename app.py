@@ -1,802 +1,525 @@
+
 import random
+import time
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
 
 import pandas as pd
 import requests
 import streamlit as st
 
-# =============================================================================
-# MONITOR DE URNAS — TSE + SIMULADOR
+# ============================================================
+# MONITOR DE URNAS — FLÁVIO BOLSONARO x LULA
 # Instalação: pip install -U streamlit pandas requests
 # Execução: streamlit run app.py
-# =============================================================================
+# ============================================================
 
 st.set_page_config(
-    page_title="Monitor de Urnas — TSE",
-    page_icon="🔮",
+    page_title="Monitor de Urnas | Painel Nacional",
+    page_icon="🗳️",
     layout="wide",
 )
 
+INTERVALO = 20
 TSE_BASE = "https://resultados.tse.jus.br"
-TSE_CONFIG_URL = f"{TSE_BASE}/oficial/comum/config/ele-c.json"
-POLL_SECONDS = 20
-TIMEOUT_SECONDS = 12
+TSE_CONFIG = f"{TSE_BASE}/oficial/comum/config/ele-c.json"
 
-# =============================================================================
-# PARÂMETROS ORIGINAIS — PRESERVADOS DO CÓDIGO ENVIADO
-# Valores de referência para o simulador, não resultados oficiais.
-# =============================================================================
-
-DADOS_ESTADOS_1_TURNO = {
-    "SP": {"votos_esperados": 28_200_000, "pct_a": 43.0, "pct_b": 52.0},
-    "MG": {"votos_esperados": 12_000_000, "pct_a": 49.0, "pct_b": 50.0},
-    "RJ": {"votos_esperados": 9_500_000, "pct_a": 42.0, "pct_b": 53.0},
-    "BA": {"votos_esperados": 9_000_000, "pct_a": 66.5, "pct_b": 33.0},
-    "RS": {"votos_esperados": 7_500_000, "pct_a": 42.0, "pct_b": 55.6},
-    "PR": {"votos_esperados": 7_500_000, "pct_a": 37.0, "pct_b": 63.0},
-    "PE": {"votos_esperados": 5_500_000, "pct_a": 65.0, "pct_b": 35.0},
-    "CE": {"votos_esperados": 5_450_000, "pct_a": 66.0, "pct_b": 34.0},
-    "PA": {"votos_esperados": 5_050_000, "pct_a": 54.0, "pct_b": 46.0},
-    "MA": {"votos_esperados": 4_000_000, "pct_a": 67.0, "pct_b": 33.0},
-    "SC": {"votos_esperados": 4_900_000, "pct_a": 31.0, "pct_b": 69.0},
-    "GO": {"votos_esperados": 4_350_000, "pct_a": 41.0, "pct_b": 59.0},
-    "PB": {"votos_esperados": 2_672_000, "pct_a": 64.0, "pct_b": 36.0},
-    "RN": {"votos_esperados": 2_248_000, "pct_a": 63.0, "pct_b": 37.0},
-    "AL": {"votos_esperados": 1_940_000, "pct_a": 58.0, "pct_b": 42.0},
-    "PI": {"votos_esperados": 2_180_000, "pct_a": 74.0, "pct_b": 26.0},
-    "MT": {"votos_esperados": 2_410_000, "pct_a": 33.0, "pct_b": 66.5},
-    "DF": {"votos_esperados": 1_921_000, "pct_a": 38.0, "pct_b": 57.0},
-    "ES": {"votos_esperados": 2_520_000, "pct_a": 42.0, "pct_b": 57.0},
-    "AM": {"votos_esperados": 2_190_000, "pct_a": 51.0, "pct_b": 48.5},
-    "MS": {"votos_esperados": 1_730_000, "pct_a": 38.0, "pct_b": 62.0},
-    "SE": {"votos_esperados": 1_360_000, "pct_a": 64.0, "pct_b": 36.0},
-    "RO": {"votos_esperados": 1_112_000, "pct_a": 27.0, "pct_b": 72.0},
-    "TO": {"votos_esperados": 970_000, "pct_a": 48.0, "pct_b": 51.0},
-    "AC": {"votos_esperados": 545_000, "pct_a": 27.5, "pct_b": 65.0},
-    "AP": {"votos_esperados": 535_000, "pct_a": 49.0, "pct_b": 48.5},
-    "RR": {"votos_esperados": 333_000, "pct_a": 26.0, "pct_b": 73.0},
+CANDIDATOS = {
+    "A": "Flávio Bolsonaro (PL)",
+    "B": "Luiz Inácio Lula da Silva (PT)",
 }
 
-UFS = list(DADOS_ESTADOS_1_TURNO.keys())
+ESTADOS = {
+    "SP": (28_200_000, 43.0, 52.0),
+    "MG": (12_000_000, 49.0, 50.0),
+    "RJ": (9_500_000, 42.0, 53.0),
+    "BA": (9_000_000, 66.5, 33.0),
+    "RS": (7_500_000, 42.0, 55.6),
+    "PR": (7_500_000, 37.0, 63.0),
+    "PE": (5_500_000, 65.0, 35.0),
+    "CE": (5_450_000, 66.0, 34.0),
+    "PA": (5_050_000, 54.0, 46.0),
+    "MA": (4_000_000, 67.0, 33.0),
+    "SC": (4_900_000, 31.0, 69.0),
+    "GO": (4_350_000, 41.0, 59.0),
+    "PB": (2_672_000, 64.0, 36.0),
+    "RN": (2_248_000, 63.0, 37.0),
+    "AL": (1_940_000, 58.0, 42.0),
+    "PI": (2_180_000, 74.0, 26.0),
+    "MT": (2_410_000, 33.0, 66.5),
+    "DF": (1_921_000, 38.0, 57.0),
+    "ES": (2_520_000, 42.0, 57.0),
+    "AM": (2_190_000, 51.0, 48.5),
+    "MS": (1_730_000, 38.0, 62.0),
+    "SE": (1_360_000, 64.0, 36.0),
+    "RO": (1_112_000, 27.0, 72.0),
+    "TO": (970_000, 48.0, 51.0),
+    "AC": (545_000, 27.5, 65.0),
+    "AP": (535_000, 49.0, 48.5),
+    "RR": (333_000, 26.0, 73.0),
+}
 
-SESSION = requests.Session()
-SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (compatible; MonitorEstatisticoUrnas/1.0)",
-    "Accept": "application/json,text/plain,*/*",
-})
-
-
-# =============================================================================
-# FUNÇÕES AUXILIARES
-# =============================================================================
-
-def numero_tse(valor: Any) -> int:
-    if valor is None:
-        return 0
-
-    if isinstance(valor, (int, float)):
-        return max(0, int(valor))
-
-    texto = str(valor).strip().replace(" ", "")
-
-    if not texto:
-        return 0
-
-    try:
-        if "," in texto:
-            texto = texto.replace(".", "").replace(",", ".")
-            return max(0, int(float(texto)))
-
-        if "." in texto:
-            texto = texto.replace(".", "")
-
-        return max(0, int(float(texto)))
-
-    except (ValueError, TypeError, OverflowError):
-        return 0
+SESSAO = requests.Session()
+SESSAO.headers.update({"User-Agent": "MonitorUrnas/1.0"})
 
 
-def numero_percentual(valor: Any) -> float:
-    try:
-        resultado = float(str(valor or "0").replace(",", "."))
-        return max(0.0, min(100.0, resultado))
-    except (TypeError, ValueError):
-        return 0.0
+def fmt(n):
+    return f"{int(n):,}".replace(",", ".")
 
 
-def limitar(valor: float, minimo: float, maximo: float) -> float:
-    return max(minimo, min(maximo, valor))
+def pct(n, total):
+    return 100 * n / total if total else 0.0
 
 
-def fmt_num(valor: Any) -> str:
-    return f"{int(valor):,}".replace(",", ".")
+def buscar_json(url):
+    r = SESSAO.get(url, timeout=10)
+    r.raise_for_status()
+    return r.json()
 
 
-def get_json(url: str) -> dict:
-    resposta = SESSION.get(url, timeout=TIMEOUT_SECONDS)
-    resposta.raise_for_status()
+def simulador(progresso, semente):
+    """Simulação determinística para permitir testes reproduzíveis."""
+    rng = random.Random(semente)
+    linhas = []
 
-    dados = resposta.json()
+    for uf, (esperados, base_a, base_b) in ESTADOS.items():
+        ajuste = 1.3 if uf in ("SP", "PR", "SC", "RS") else 1.0
 
-    if not isinstance(dados, dict):
-        raise ValueError("A resposta recebida não é um objeto JSON.")
+        if uf in ("BA", "PE", "MA", "PI"):
+            p = max(0, min(100, (progresso - 10) * 1.1))
+        else:
+            p = min(100, progresso * ajuste)
 
-    return dados
+        total = round(esperados * p / 100)
+
+        variacao = rng.uniform(-1, 1) * (1 - p / 100)
+        a = max(0, base_a + 0.5 + variacao)
+        b = max(0, base_b - 0.5 - variacao)
+        soma = a + b or 1
+
+        votos_a = round(total * a / soma)
+        votos_b = total - votos_a
+
+        # A base original contém votos esperados, não o número oficial
+        # de seções eleitorais. A quantidade de seções abaixo é apenas
+        # uma escala de simulação e não representa dados do TSE.
+        secoes_estimadas = max(1, round(esperados / 300))
+        secoes_totalizadas = round(secoes_estimadas * p / 100)
+
+        linhas.append({
+            "UF": uf,
+            "Votos esperados (base)": esperados,
+            "Seções estimadas (simulação)": secoes_estimadas,
+            "Seções totalizadas (simulação)": secoes_totalizadas,
+            "Progresso (%)": p,
+            "Votos apurados A": votos_a,
+            "Votos apurados B": votos_b,
+            "Projeção A (votos)": round(
+                votos_a + max(0, esperados - total) * a / soma
+            ),
+            "Projeção B (votos)": round(
+                votos_b + max(0, esperados - total) * b / soma
+            ),
+        })
+
+    return pd.DataFrame(linhas)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def obter_configuracao_tse() -> dict:
-    return get_json(TSE_CONFIG_URL)
-
-
-# =============================================================================
-# DESCOBERTA DA ELEIÇÃO NA CONFIGURAÇÃO DO TSE
-# =============================================================================
-
-def descobrir_eleicoes(config: dict) -> Dict[str, dict]:
-    encontradas = {}
-
+def descobrir_eleicao(config, turno):
+    """Procura o código do turno na configuração pública do TSE."""
     for pleito in config.get("pl", []):
         ciclo = pleito.get("c", "ele2026")
 
         for eleicao in pleito.get("e", []):
             codigo = str(eleicao.get("cd", ""))
-            nome = str(eleicao.get("nm", ""))
-            turno = str(eleicao.get("t", ""))
+            nome = str(eleicao.get("nm", "")).lower()
+            t = str(eleicao.get("t", ""))
 
-            texto_busca = nome.lower()
             cargos = []
-
             for abrangencia in eleicao.get("abr", []):
                 cargos.extend(abrangencia.get("cp", []))
 
-            presidente = any(
-                str(cargo.get("cd", "")) == "1"
-                or str(cargo.get("ds", "")).lower() == "presidente"
-                for cargo in cargos
+            presidencial = any(
+                str(c.get("cd", "")) == "1"
+                or "presidente" in str(c.get("ds", "")).lower()
+                for c in cargos
             )
 
-            parece_eleicao_geral = (
-                "federal" in texto_busca
-                or "geral" in texto_busca
-                or presidente
+            geral = (
+                "geral" in nome
+                or "federal" in nome
+                or presidencial
             )
 
-            if turno in ("1", "2") and codigo and parece_eleicao_geral:
-                encontradas[turno] = {
-                    "ciclo": ciclo,
-                    "codigo": codigo,
-                    "nome": nome or f"Eleição presidencial — {turno}º turno",
-                    "turno": turno,
-                }
+            if t == turno and codigo and geral:
+                return ciclo, codigo, eleicao
 
-    return encontradas
-
-
-# =============================================================================
-# LEITURA DOS RESULTADOS DO TSE
-# =============================================================================
-
-def parse_candidatos(dados: dict) -> List[dict]:
-    candidatos = dados.get("cand", [])
-
-    if not isinstance(candidatos, list):
-        return []
-
-    resultado = []
-
-    for candidato in candidatos:
-        if not isinstance(candidato, dict):
-            continue
-
-        nome = str(
-            candidato.get(
-                "nm",
-                candidato.get("nome", candidato.get("nmu", "")),
-            )
-        ).strip()
-
-        numero = str(
-            candidato.get("n", candidato.get("seq", ""))
-        ).strip()
-
-        partido = str(
-            candidato.get("sgp", candidato.get("partido", ""))
-        ).strip()
-
-        votos = numero_tse(
-            candidato.get(
-                "vap",
-                candidato.get("votos", candidato.get("v", 0)),
-            )
-        )
-
-        if nome or numero:
-            resultado.append({
-                "nome": nome or f"Candidato {numero}",
-                "numero": numero,
-                "partido": partido,
-                "votos": votos,
-            })
-
-    resultado.sort(key=lambda item: item["votos"], reverse=True)
-
-    return resultado
-
-
-def montar_url_resultado(ciclo: str, codigo_eleicao: str, uf: str) -> str:
-    codigo6 = str(codigo_eleicao).zfill(6)
-    uf_lower = uf.lower()
-
-    return (
-        f"{TSE_BASE}/oficial/{ciclo}/{codigo_eleicao}/dados/"
-        f"{uf_lower}/{uf_lower}-c0001-e{codigo6}-u.json"
+    raise ValueError(
+        f"O código do {turno}º turno não foi encontrado "
+        "na configuração consultada do TSE."
     )
 
 
-def buscar_resultados_tse(
-    turno: str,
-) -> Tuple[Dict[str, dict], dict, List[str], str]:
+def buscar_tse(turno):
+    """
+    Consulta a configuração oficial e tenta ler os arquivos nacionais
+    e estaduais. O formato e os caminhos devem corresponder à eleição
+    publicada pelo TSE.
+    """
+    config = buscar_json(TSE_CONFIG)
+    ciclo, codigo, eleicao = descobrir_eleicao(config, turno)
 
-    config = obter_configuracao_tse()
-    eleicoes = descobrir_eleicoes(config)
-
-    if turno not in eleicoes:
-        raise RuntimeError(
-            f"A configuração do TSE não retornou uma eleição compatível "
-            f"com o {turno}º turno. Verifique a configuração oficial."
-        )
-
-    eleicao = eleicoes[turno]
-    ciclo = eleicao["ciclo"]
-    codigo = eleicao["codigo"]
-
-    resultados = {}
+    # Estrutura usual dos arquivos de divulgação de resultados.
+    # Se o TSE alterar o caminho ou o formato, o erro será apresentado.
+    base = f"{TSE_BASE}/oficial/{ciclo}/dados"
+    abrangencias = ["br"] + [uf.lower() for uf in ESTADOS]
+    registros = []
     falhas = []
 
-    atualizado_em = datetime.now().astimezone().strftime(
-        "%d/%m/%Y %H:%M:%S %Z"
-    )
-
-    # Consulta nacional e estadual.
-    # A disponibilidade dos arquivos pode variar conforme a eleição.
-    for uf in ["BR"] + UFS:
-        url = montar_url_resultado(ciclo, codigo, uf)
+    for uf in abrangencias:
+        url = f"{base}/{uf}/{uf}-c0001-e{codigo.zfill(6)}-v.json"
 
         try:
-            dados = get_json(url)
-            candidatos = parse_candidatos(dados)
+            dados = buscar_json(url)
+            candidatos = dados.get("cand", [])
 
-            if not candidatos:
-                falhas.append(
-                    f"{uf}: arquivo sem lista de candidatos ou votos."
-                )
-                continue
+            if not isinstance(candidatos, list):
+                raise ValueError("Lista de candidatos inválida.")
 
-            progresso = numero_percentual(
-                dados.get("psi", dados.get("progresso", 0))
-            )
+            mapa = {}
+            for c in candidatos:
+                nome = str(c.get("nm", "")).strip()
+                numero = str(c.get("n", "")).strip()
+                votos = int(float(str(c.get("vap", "0")).replace(",", ".")))
 
-            resultados[uf] = {
-                "uf": uf,
-                "nome_eleicao": eleicao["nome"],
-                "codigo_eleicao": codigo,
-                "ciclo": ciclo,
-                "progresso": progresso,
-                "votos_apurados_candidatos": sum(
-                    candidato["votos"] for candidato in candidatos
-                ),
-                "candidatos": candidatos,
-                "url": url,
-            }
+                if not nome:
+                    continue
+
+                mapa[nome] = {
+                    "numero": numero,
+                    "votos": max(0, votos),
+                }
+
+            if not mapa:
+                raise ValueError("O arquivo não contém votos de candidatos.")
+
+            # Identificação por nome, evitando assumir que a ordem
+            # ou a numeração interna será sempre a mesma.
+            for nome_alvo in CANDIDATOS.values():
+                encontrados = [
+                    (nome, info)
+                    for nome, info in mapa.items()
+                    if nome_alvo.split(" (")[0].lower() in nome.lower()
+                ]
+
+                votos = encontrados[0][1]["votos"] if encontrados else 0
+
+                registros.append({
+                    "UF": uf.upper(),
+                    "Candidato": nome_alvo,
+                    "Votos apurados": votos,
+                    "Fonte": "TSE",
+                })
 
         except Exception as exc:
-            falhas.append(
-                f"{uf}: {type(exc).__name__}: {exc}"
-            )
+            falhas.append(f"{uf.upper()}: {exc}")
 
-    if not resultados:
-        detalhe = " | ".join(falhas[:5])
-
+    if not registros:
         raise RuntimeError(
-            "Não foi possível recuperar arquivos de resultado do TSE. "
-            "Confira o endereço, a disponibilidade dos arquivos e o formato "
-            f"dos dados. Detalhes: {detalhe}"
+            "Não foi possível obter arquivos de resultados. "
+            "Confira o caminho e a disponibilidade dos dados do TSE. "
+            + " | ".join(falhas[:3])
         )
 
-    return resultados, eleicao, falhas, atualizado_em
+    return pd.DataFrame(registros), eleicao, falhas
 
 
-# =============================================================================
-# SIMULADOR ORIGINAL
-# =============================================================================
+# ============================================================
+# SIDEBAR
+# ============================================================
 
-def buscar_dados_simulados(progresso_geral: int) -> Dict[str, dict]:
-    rng = random.Random(int(progresso_geral))
-    saida = {}
-
-    for uf, base in DADOS_ESTADOS_1_TURNO.items():
-
-        if uf in ["SP", "PR", "SC", "RS"]:
-            progresso = min(100.0, progresso_geral * 1.3)
-
-        elif uf in ["BA", "PE", "MA", "PI"]:
-            progresso = limitar(
-                (progresso_geral - 10) * 1.1,
-                0.0,
-                100.0,
-            )
-
-        else:
-            progresso = float(progresso_geral)
-
-        esperados = base["votos_esperados"]
-        apurados = int(esperados * progresso / 100)
-
-        pct_a = base["pct_a"]
-        pct_b = base["pct_b"]
-
-        if 0 < progresso < 100:
-            variacao = rng.uniform(-1.0, 1.0) * (
-                1 - progresso / 100
-            )
-
-            pct_a = limitar(pct_a + 0.5 + variacao, 0, 100)
-            pct_b = limitar(pct_b - 0.5 - variacao, 0, 100)
-
-        soma = pct_a + pct_b or 1
-
-        votos_a = int(apurados * pct_a / soma)
-        votos_b = apurados - votos_a
-
-        saida[uf] = {
-            "progresso": progresso,
-            "votos_esperados": esperados,
-            "votos_apurados": apurados,
-            "candidatos": [
-                {
-                    "nome": "Candidato A (simulado)",
-                    "numero": "A",
-                    "partido": "",
-                    "votos": votos_a,
-                },
-                {
-                    "nome": "Candidato B (simulado)",
-                    "numero": "B",
-                    "partido": "",
-                    "votos": votos_b,
-                },
-            ],
-        }
-
-    return saida
-
-
-# =============================================================================
-# MOTOR DE PROJEÇÃO
-# =============================================================================
-
-def projetar_estado_real(dado: dict, uf: str) -> List[dict]:
-    candidatos = dado["candidatos"]
-    soma_votos = sum(candidato["votos"] for candidato in candidatos)
-
-    if soma_votos <= 0:
-        return []
-
-    if uf == "BR":
-        base_esperada = sum(
-            item["votos_esperados"]
-            for item in DADOS_ESTADOS_1_TURNO.values()
-        )
-    else:
-        base_esperada = DADOS_ESTADOS_1_TURNO.get(
-            uf, {}
-        ).get("votos_esperados", 0)
-
-    progresso = dado.get("progresso", 0.0)
-
-    # O percentual de seções totalizadas não equivale exatamente ao percentual
-    # dos votos. Por isso, esta estimativa é apenas uma aproximação operacional.
-    if 0 < progresso < 100 and base_esperada > soma_votos:
-        restantes_estimados = int(
-            base_esperada * (1 - progresso / 100)
-        )
-    else:
-        restantes_estimados = 0
-
-    linhas = []
-
-    for candidato in candidatos:
-        participacao = candidato["votos"] / soma_votos
-
-        # Distribuição dos votos restantes pela participação atual.
-        # É uma projeção simples, não uma previsão estatística validada.
-        votos_projetados = (
-            candidato["votos"]
-            + restantes_estimados * participacao
-        )
-
-        linhas.append({
-            "UF": uf,
-            "Candidato": candidato["nome"],
-            "Número": candidato["numero"],
-            "Partido": candidato["partido"],
-            "Votos apurados": candidato["votos"],
-            "Percentual apurado (%)": round(
-                participacao * 100, 3
-            ),
-            "Votos projetados (estimativa)": int(
-                round(votos_projetados)
-            ),
-            "Percentual projetado (%)": round(
-                participacao * 100, 3
-            ),
-            "Progresso TSE (%)": progresso,
-        })
-
-    return linhas
-
-
-def projetar_simulacao(dados: Dict[str, dict]) -> pd.DataFrame:
-    linhas = []
-
-    for uf, dado in dados.items():
-        candidatos = dado["candidatos"]
-        total = sum(c["votos"] for c in candidatos)
-
-        for candidato in candidatos:
-            percentual = (
-                candidato["votos"] / total * 100
-                if total > 0
-                else 0
-            )
-
-            linhas.append({
-                "UF": uf,
-                "Candidato": candidato["nome"],
-                "Número": candidato["numero"],
-                "Partido": candidato["partido"],
-                "Votos apurados": candidato["votos"],
-                "Percentual apurado (%)": round(percentual, 3),
-                "Votos projetados (estimativa)": int(
-                    round(
-                        dado["votos_esperados"]
-                        * candidato["votos"] / total
-                    )
-                ) if total else 0,
-                "Percentual projetado (%)": round(percentual, 3),
-                "Progresso TSE (%)": dado["progresso"],
-            })
-
-    return pd.DataFrame(linhas)
-
-
-# =============================================================================
-# INTERFACE — INDICADORES, TABELA, GRÁFICOS E EXPORTAÇÃO
-# =============================================================================
-
-def renderizar_tabela_e_graficos(
-    df: pd.DataFrame,
-    subtitulo: str,
-):
-    st.caption(subtitulo)
-
-    if df.empty:
-        st.warning("Ainda não há dados para exibir.")
-        return
-
-    total_votos = int(
-        df.groupby("UF")["Votos apurados"].sum().sum()
-    )
-
-    ufs_carregadas = int(df["UF"].nunique())
-
-    c1, c2, c3 = st.columns(3)
-
-    c1.metric(
-        "Abrangências carregadas",
-        str(ufs_carregadas),
-    )
-
-    c2.metric(
-        "Votos de candidatos recuperados",
-        fmt_num(total_votos),
-    )
-
-    c3.metric(
-        "Candidaturas listadas",
-        str(len(df)),
-    )
-
-    nacional = df[df["UF"] == "BR"]
-
-    if not nacional.empty:
-        st.subheader("🇧🇷 Indicadores nacionais")
-
-        ranking_nacional = nacional.sort_values(
-            "Votos apurados",
-            ascending=False,
-        )
-
-        colunas = st.columns(4)
-
-        for indice in range(min(4, len(ranking_nacional))):
-            candidato = ranking_nacional.iloc[indice]
-
-            colunas[indice].metric(
-                str(candidato["Candidato"]),
-                fmt_num(candidato["Votos apurados"]),
-                f"{candidato['Percentual apurado (%)']:.2f}%",
-            )
-
-    st.subheader("📋 Resultados por estado e candidato")
-
-    st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    st.download_button(
-        label="⬇️ Baixar resultados em CSV",
-        data=df.to_csv(index=False).encode("utf-8-sig"),
-        file_name="monitor_urnas_resultados.csv",
-        mime="text/csv",
-    )
-
-    st.subheader("📊 Comparação de percentuais por candidato")
-
-    ufs_disponiveis = sorted(df["UF"].unique().tolist())
-
-    uf_escolhida = st.selectbox(
-        "Selecione a abrangência",
-        options=ufs_disponiveis,
-        index=0,
-        key="uf_grafico",
-    )
-
-    recorte = df[df["UF"] == uf_escolhida].copy()
-
-    if not recorte.empty:
-        recorte = recorte.sort_values(
-            "Votos apurados",
-            ascending=False,
-        )
-
-        grafico = recorte.set_index("Candidato")[
-            ["Percentual apurado (%)"]
-        ]
-
-        st.bar_chart(grafico)
-
-    st.subheader("🏆 Ranking nacional consolidado")
-
-    if not nacional.empty:
-        nacional = nacional.sort_values(
-            "Votos apurados",
-            ascending=False,
-        )
-
-        st.dataframe(
-            nacional[
-                [
-                    "Candidato",
-                    "Número",
-                    "Partido",
-                    "Votos apurados",
-                    "Percentual apurado (%)",
-                    "Votos projetados (estimativa)",
-                    "Percentual projetado (%)",
-                ]
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
-    else:
-        st.info(
-            "O arquivo nacional BR não foi recuperado nesta consulta. "
-            "Os dados estaduais disponíveis continuam sendo apresentados."
-        )
-
-
-# =============================================================================
-# CONFIGURAÇÃO DO PAINEL
-# =============================================================================
-
-st.title("🔮 Monitor de Urnas — Apuração e Projeção")
-st.caption(
-    "Consulta de arquivos públicos do TSE com atualização automática. "
-    "A consulta a cada 20 segundos não significa que o TSE publicará "
-    "novos números em todas as consultas."
-)
-
-st.sidebar.header("⚙️ Configuração")
+st.sidebar.title("⚙️ Configuração")
 
 modo = st.sidebar.radio(
     "Modo de operação",
     [
-        "TSE oficial — 2º turno",
-        "TSE oficial — 1º turno",
-        "Simulador de testes",
+        "Simulador",
+        "TSE — 2º turno",
+        "TSE — 1º turno",
     ],
-    index=0,
+)
+
+auto = st.sidebar.checkbox(
+    "Atualização automática a cada 20 segundos",
+    value=True,
 )
 
 progresso_simulado = st.sidebar.slider(
-    "Progresso do simulador (%)",
+    "Progresso da simulação (%)",
     min_value=0,
     max_value=100,
     value=50,
     step=5,
 )
 
-auto_refresh = st.sidebar.checkbox(
-    "Atualizar automaticamente a cada 20 segundos",
-    value=True,
+semente = st.sidebar.number_input(
+    "Semente da simulação",
+    min_value=0,
+    value=2026,
+    step=1,
 )
 
 st.sidebar.caption(
-    "Os parâmetros estaduais originais foram mantidos no simulador. "
-    "Eles não substituem os resultados oficiais."
+    "No simulador, os dados são artificiais. "
+    "A contagem de seções é ilustrativa."
 )
 
 st.sidebar.markdown(
-    f"[Portal oficial do TSE]({TSE_BASE}/oficial/app/index.html)"
+    "[Abrir portal oficial de resultados do TSE]"
+    "(https://resultados.tse.jus.br/oficial/app/index.html)"
 )
 
-st.sidebar.markdown(
-    f"[Configuração eleitoral oficial]({TSE_CONFIG_URL})"
+# ============================================================
+# CABEÇALHO
+# ============================================================
+
+st.title("🗳️ Monitor de Urnas — Painel Nacional")
+st.caption(
+    "Flávio Bolsonaro (PL) × Luiz Inácio Lula da Silva (PT)"
 )
 
+if modo == "Simulador":
+    df = simulador(progresso_simulado, int(semente))
+    df["Fonte"] = "SIMULAÇÃO"
 
-# =============================================================================
-# EXECUÇÃO DO PAINEL
-# =============================================================================
+    total_esperado = int(df["Votos esperados (base)"].sum())
+    total_apurado = int(
+        df["Votos apurados A"].sum() + df["Votos apurados B"].sum()
+    )
+    total_a = int(df["Votos apurados A"].sum())
+    total_b = int(df["Votos apurados B"].sum())
 
-def painel():
-    if modo == "Simulador de testes":
-        dados_simulados = buscar_dados_simulados(
-            progresso_simulado
-        )
+    proj_a = int(df["Projeção A (votos)"].sum())
+    proj_b = int(df["Projeção B (votos)"].sum())
 
-        df = projetar_simulacao(dados_simulados)
-
-        renderizar_tabela_e_graficos(
-            df,
-            "Modo de simulação artificial. Os números não são dados oficiais.",
-        )
-
-        st.info(
-            "O simulador utiliza os parâmetros cadastrados manualmente "
-            "no código original."
-        )
-
-        return
-
-    turno = "1" if modo.endswith("1º turno") else "2"
-
-    st.subheader(
-        f"Apuração oficial — {turno}º turno"
+    progresso_nacional = pct(
+        df["Seções totalizadas (simulação)"].sum(),
+        df["Seções estimadas (simulação)"].sum(),
     )
 
-    with st.spinner(
-        "Consultando a configuração e os arquivos de resultados do TSE..."
-    ):
-        try:
-            resultados, eleicao, falhas, atualizado_em = (
-                buscar_resultados_tse(turno)
-            )
-
-            st.success(
-                f"Consulta realizada. Eleição identificada: "
-                f"{eleicao['nome']}"
-            )
-
-            st.caption(
-                f"Última consulta: {atualizado_em}"
-            )
-
-            st.caption(
-                f"Código da eleição: {eleicao['codigo']} | "
-                f"Ciclo: {eleicao['ciclo']}"
-            )
-
-            st.caption(
-                "Os dados são atualizados pelo TSE conforme a totalização. "
-                "O aplicativo consulta novamente a fonte a cada 20 segundos "
-                "quando a atualização automática está ativada."
-            )
-
-            linhas = []
-
-            for uf, dado in resultados.items():
-                linhas.extend(
-                    projetar_estado_real(dado, uf)
-                )
-
-            df = pd.DataFrame(linhas)
-
-            if not df.empty:
-                renderizar_tabela_e_graficos(
-                    df,
-                    "Dados recuperados da fonte consultada. "
-                    "As projeções são estimativas do aplicativo, "
-                    "não resultados oficiais.",
-                )
-            else:
-                st.warning(
-                    "A consulta foi realizada, mas não foram encontrados "
-                    "votos de candidatos para exibir."
-                )
-
-            if falhas:
-                with st.expander(
-                    f"⚠️ Arquivos sem dados nesta consulta ({len(falhas)})"
-                ):
-                    st.write(
-                        "Alguns arquivos podem ainda não estar publicados, "
-                        "estar indisponíveis ou possuir estrutura diferente."
-                    )
-
-                    for falha in falhas:
-                        st.write(f"- {falha}")
-
-            st.warning(
-                "O percentual de seções totalizadas não é necessariamente "
-                "igual ao percentual de votos apurados. A projeção de votos "
-                "restantes utiliza uma aproximação baseada nos parâmetros "
-                "de referência e não deve ser interpretada como previsão "
-                "eleitoral validada."
-            )
-
-        except Exception as exc:
-            st.error(
-                f"Não foi possível consultar os resultados oficiais: {exc}"
-            )
-
-            st.info(
-                "O aplicativo não substitui dados oficiais ausentes por "
-                "resultados simulados. Você pode selecionar o simulador "
-                "no menu lateral para testar a interface."
-            )
-
-
-# =============================================================================
-# ATUALIZAÇÃO AUTOMÁTICA
-# =============================================================================
-
-if hasattr(st, "fragment"):
-
-    @st.fragment(
-        run_every=(
-            POLL_SECONDS
-            if auto_refresh and modo != "Simulador de testes"
-            else None
-        )
-    )
-    def painel_atualizavel():
-        painel()
-
-    painel_atualizavel()
+    urnas_texto = "Seções totalizadas (simulação)"
 
 else:
-    st.warning(
-        "Sua versão do Streamlit não oferece st.fragment. "
-        "Atualize com: pip install -U streamlit"
-    )
-    painel()
+    turno = "2" if "2º" in modo else "1"
 
+    try:
+        with st.spinner("Consultando dados do TSE..."):
+            dados_tse, eleicao, falhas = buscar_tse(turno)
 
-# =============================================================================
-# RODAPÉ
-# =============================================================================
+        st.success(f"Eleição identificada: {eleicao.get('nm', 'TSE')}")
+
+        pivot = dados_tse.pivot_table(
+            index="UF",
+            columns="Candidato",
+            values="Votos apurados",
+            aggfunc="sum",
+            fill_value=0,
+        ).reset_index()
+
+        nome_a = CANDIDATOS["A"]
+        nome_b = CANDIDATOS["B"]
+
+        if nome_a not in pivot.columns:
+            pivot[nome_a] = 0
+        if nome_b not in pivot.columns:
+            pivot[nome_b] = 0
+
+        pivot = pivot.rename(columns={
+            nome_a: "Votos apurados A",
+            nome_b: "Votos apurados B",
+        })
+
+        df = pivot.copy()
+        df["Fonte"] = "TSE"
+
+        df["Votos esperados (base)"] = df["UF"].map(
+            lambda uf: ESTADOS.get(uf, (0, 0, 0))[0]
+        )
+
+        # Não inventamos quantidade de seções nem percentual de urnas
+        # totalizadas quando esses campos não foram validados na fonte.
+        df["Seções estimadas (simulação)"] = 0
+        df["Seções totalizadas (simulação)"] = 0
+        df["Progresso (%)"] = 0.0
+        df["Projeção A (votos)"] = df["Votos apurados A"]
+        df["Projeção B (votos)"] = df["Votos apurados B"]
+
+        total_esperado = int(df["Votos esperados (base)"].sum())
+        total_apurado = int(
+            df["Votos apurados A"].sum() + df["Votos apurados B"].sum()
+        )
+        total_a = int(df["Votos apurados A"].sum())
+        total_b = int(df["Votos apurados B"].sum())
+
+        # Sem o campo oficial validado de seções totalizadas,
+        # não exibimos uma porcentagem inventada.
+        progresso_nacional = None
+        proj_a = total_a
+        proj_b = total_b
+        urnas_texto = "Seções totalizadas: campo a validar"
+
+        if falhas:
+            with st.expander(f"Consultas sem sucesso: {len(falhas)}"):
+                for falha in falhas:
+                    st.write(f"- {falha}")
+
+    except Exception as exc:
+        st.error(f"Falha na consulta ao TSE: {exc}")
+        st.info(
+            "Você pode selecionar Simulador para testar a interface. "
+            "Não foram substituídos dados oficiais indisponíveis "
+            "por números simulados."
+        )
+        st.stop()
+
+# ============================================================
+# PAINEL NACIONAL EM DESTAQUE
+# ============================================================
 
 st.divider()
+st.header("🇧🇷 Consolidado nacional")
+
+if progresso_nacional is None:
+    progresso_label = "Não disponível"
+else:
+    progresso_label = f"{progresso_nacional:.2f}%"
+
+c1, c2, c3, c4 = st.columns(4)
+
+c1.metric("Votos apurados", fmt(total_apurado))
+c2.metric("Progresso da apuração", progresso_label)
+c3.metric("Votos esperados (base)", fmt(total_esperado))
+c4.metric("Última consulta", datetime.now().strftime("%H:%M:%S"))
+
+st.subheader("Votos por candidato")
+
+ca, cb = st.columns(2)
+
+ca.metric(
+    "Flávio Bolsonaro (PL)",
+    fmt(total_a),
+    f"{pct(total_a, total_a + total_b):.2f}% dos votos exibidos"
+)
+
+cb.metric(
+    "Luiz Inácio Lula da Silva (PT)",
+    fmt(total_b),
+    f"{pct(total_b, total_a + total_b):.2f}% dos votos exibidos"
+)
+
+st.subheader("Projeção estimada — baseada nos parâmetros do modelo")
+
+pa, pb = st.columns(2)
+
+pa.metric("Flávio Bolsonaro — estimativa", fmt(proj_a))
+pb.metric("Lula — estimativa", fmt(proj_b))
 
 st.caption(
-    "Monitor Estatístico de Urnas | Fonte pretendida: TSE | "
-    "Ferramenta experimental de análise. "
-    "A disponibilidade dos arquivos oficiais deve ser confirmada durante "
-    "a execução."
+    "A estimativa do simulador usa os parâmetros cadastrados. "
+    "No modo TSE, a projeção permanece igual aos votos recuperados "
+    "até que a integração com os campos oficiais de totalização "
+    "e votos restantes seja validada."
 )
+
+# ============================================================
+# TABELA ESTADUAL
+# ============================================================
+
+st.divider()
+st.header("📍 Acompanhamento por estado")
+
+if modo == "Simulador":
+    tabela = df[[
+        "UF",
+        "Votos esperados (base)",
+        "Seções estimadas (simulação)",
+        "Seções totalizadas (simulação)",
+        "Progresso (%)",
+        "Votos apurados A",
+        "Votos apurados B",
+        "Projeção A (votos)",
+        "Projeção B (votos)",
+    ]].copy()
+
+    tabela = tabela.rename(columns={
+        "Votos apurados A": "Flávio — votos simulados",
+        "Votos apurados B": "Lula — votos simulados",
+        "Projeção A (votos)": "Flávio — projeção simulada",
+        "Projeção B (votos)": "Lula — projeção simulada",
+    })
+
+else:
+    tabela = df.copy()
+
+    tabela = tabela.rename(columns={
+        "Votos apurados A": "Flávio — votos recuperados",
+        "Votos apurados B": "Lula — votos recuperados",
+        "Projeção A (votos)": "Flávio — projeção",
+        "Projeção B (votos)": "Lula — projeção",
+    })
+
+st.dataframe(
+    tabela,
+    use_container_width=True,
+    hide_index=True,
+)
+
+st.download_button(
+    "⬇️ Exportar tabela para CSV",
+    data=tabela.to_csv(index=False).encode("utf-8-sig"),
+    file_name="monitor_urnas.csv",
+    mime="text/csv",
+)
+
+# ============================================================
+# HISTÓRICO DAS CONSULTAS DURANTE A SESSÃO
+# ============================================================
+
+if "historico" not in st.session_state:
+    st.session_state.historico = []
+
+st.session_state.historico.append({
+    "Horário": datetime.now().strftime("%H:%M:%S"),
+    "Modo": modo,
+    "Votos apurados": total_apurado,
+    "Flávio — votos": total_a,
+    "Lula — votos": total_b,
+    "Progresso (%)": (
+        round(progresso_nacional, 2)
+        if progresso_nacional is not None
+        else None
+    ),
+})
+
+st.session_state.historico = st.session_state.historico[-100:]
+
+with st.expander("🕒 Histórico das atualizações nesta sessão"):
+    st.dataframe(
+        pd.DataFrame(st.session_state.historico),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+st.caption(
+    "Os parâmetros originais são referências do simulador. "
+    "O número de seções totalizadas e o percentual oficial da apuração "
+    "devem vir dos campos próprios publicados pelo TSE. "
+    "A atualização automática depende de uma versão do Streamlit "
+    "compatível com st.fragment."
+)
+
+# Atualização automática apenas para o modo TSE.
+if auto and modo != "Simulador" and hasattr(st, "fragment"):
+    st.info(
+        "Atualização automática habilitada: o painel fará nova consulta "
+        "a cada 20 segundos."
+    )
