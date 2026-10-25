@@ -694,6 +694,36 @@ def mostrar_df(df):
         st.dataframe(df, use_container_width=True, hide_index=True)
 
 
+def grafico_urnas(df):
+    """Barras: maiores colégios eleitorais à esquerda; altura = % de urnas apuradas."""
+    d = df[["uf", "regiao", "pct_secoes", "votos_previstos"]].copy()
+    d = d.sort_values("votos_previstos", ascending=False)
+    d["pct"] = d["pct_secoes"].round(1)
+    d["previstos"] = d["votos_previstos"].round(0).astype("int64")
+    ordem = d["uf"].tolist()
+    try:
+        import altair as alt
+
+        base = alt.Chart(d).encode(
+            x=alt.X("uf:N", sort=ordem, title="Estado (maior eleitorado à esquerda)"),
+            y=alt.Y("pct:Q", scale=alt.Scale(domain=[0, 100]), title="% de urnas apuradas"),
+            tooltip=[
+                alt.Tooltip("uf:N", title="Estado"),
+                alt.Tooltip("pct:Q", title="% apuradas"),
+                alt.Tooltip("previstos:Q", title="Votos previstos", format=","),
+            ],
+        )
+        barras = base.mark_bar().encode(color=alt.Color("regiao:N", title="Região"))
+        rotulos = base.mark_text(dy=-7, fontSize=11).encode(text=alt.Text("pct:Q", format=".0f"))
+        grafico = (barras + rotulos).properties(height=320)
+        try:
+            st.altair_chart(grafico, width="stretch")
+        except Exception:
+            st.altair_chart(grafico, use_container_width=True)
+    except Exception:
+        st.bar_chart(d.set_index("uf")["pct"])
+
+
 def painel(modo, escala, m, modo_base, prog_sim, desvio_sim):
     agora = datetime.now(TZ)
     st.caption(f"Última atualização do painel: {agora.strftime('%d/%m/%Y %H:%M:%S')} (Brasília)")
@@ -793,6 +823,21 @@ def painel(modo, escala, m, modo_base, prog_sim, desvio_sim):
         lider = "Empate na projeção"
     p3.metric("Diferença projetada", fmt_num(diferenca), lider)
 
+    base_a = sum(b["T0"] * b["s0"] for b in bases.values())
+    base_b = sum(b["T0"] * (1 - b["s0"]) for b in bases.values())
+    b1, b2, b3 = st.columns(3)
+    b1.metric("Previsão-base (sem urnas) — Lula", fmt_pct(base_a / (base_a + base_b) * 100))
+    b2.metric(
+        "Contagem real até agora — Lula",
+        fmt_pct(real_a / (real_a + real_b) * 100) if (real_a + real_b) > 0 else "—",
+    )
+    b3.metric("Projeção do motor — Lula", fmt_pct(pct_a))
+    st.caption(
+        "A contagem real pode ficar muito diferente da projeção no início, porque as urnas "
+        "que abrem primeiro vêm de estados específicos. O motor compara cada estado com a "
+        "sua própria base, por isso não confunde 'quem abriu primeiro' com 'quem está ganhando'."
+    )
+
     a_apurar = max(0.0, total_proj - (real_a + real_b)) if nacional else total_proj
     q1, q2, q3 = st.columns(3)
     q1.metric("Votos a apurar (estimado)", fmt_num(a_apurar))
@@ -829,12 +874,16 @@ def painel(modo, escala, m, modo_base, prog_sim, desvio_sim):
         "Não são percentuais oficiais do TSE. Projeção = estimativa, não resultado oficial."
     )
 
-    # ---------- 3. evolução ----------
+    # ---------- 3. urnas por estado ----------
+    st.subheader("3. Urnas apuradas por estado (maiores colégios eleitorais primeiro)")
+    grafico_urnas(df)
+
+    # ---------- 4. evolução ----------
     if status != "aguardando" and nacional:
         chave = f"{modo}|{dados['eleicao']}"
         serie = registrar_historico(chave, nacional, total_a, total_b)
         if len(serie) >= 2:
-            st.subheader("3. Evolução da projeção")
+            st.subheader("4. Evolução da projeção")
             dh = pd.DataFrame(serie).sort_values("Seções apuradas %", kind="stable")
             g1, g2 = st.columns(2)
             g1.caption("Projeção % de cada candidato (eixo: % de seções apuradas)")
@@ -847,7 +896,7 @@ def painel(modo, escala, m, modo_base, prog_sim, desvio_sim):
             )
 
     # ---------- 4. motor: clima por região ----------
-    st.subheader("4. Motor de análise — o que as urnas estão dizendo")
+    st.subheader("5. Motor de análise — o que as urnas estão dizendo")
     linhas_reg = []
     for r in ["Brasil"] + list(REGIOES):
         c = clima_resumo.get(r)
@@ -873,7 +922,7 @@ def painel(modo, escala, m, modo_base, prog_sim, desvio_sim):
     )
 
     # ---------- 5. tabela ----------
-    st.subheader("5. Acompanhamento por estado")
+    st.subheader("6. Acompanhamento por estado")
     tabela = pd.DataFrame(
         {
             "UF": df["UF"],
