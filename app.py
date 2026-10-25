@@ -131,7 +131,7 @@ def processar_modelos_eleitorais(dados_estados, progresso_geral):
         fator_base = total_pct_historico if total_pct_historico > 0 else 1
         pct_base_a = DADOS_ESTADOS_1_TURNO[uf]["pct_a"] / fator_base
         
-        if urnas_totais_br_computadas == 0:
+        if urnas_totais_br_computadas == 0 or progresso_geral == 0:
             proj_estado_a = dados["votos_total_esperados"] * 0.5
             proj_estado_b = dados["votos_total_esperados"] * 0.5
             desvio_identificado = 0.0
