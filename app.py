@@ -182,4 +182,4 @@ with col2:
     st.markdown("### 🧠 Projeção Adaptativa Ponderada (Previsão Final)")
     if progresso_visual == 0:
         st.info("📊 Aguardando abertura das urnas. Motor de aprendizado inicializado em neutralidade (50/50).")
-    else:
+    
