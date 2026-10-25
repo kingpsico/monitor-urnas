@@ -1,5 +1,23 @@
-python
+"""
+==========================================================
+MOTOR ELEITORAL 2026 — 2º TURNO PRESIDENCIAL (25/10/2026)
+A = Lula (13, PT)  |  B = Flávio Bolsonaro (22, PL)
+Fonte oficial: arquivos JSON públicos do TSE (resultados.tse.jus.br)
+
+O app:
+  1. Fica consultando o TSE sozinho (a cada 20 s). Antes da apuração
+     mostra "aguardando"; quando os arquivos aparecem, começa sozinho.
+  2. Lê os 27 estados + Exterior (ZZ) em paralelo.
+  3. Compara a PREVISÃO-BASE de cada estado com os votos reais e
+     recalcula a projeção final continuamente.
+==========================================================
+"""
+
+import json
+import threading
 import time
+import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -7,44 +25,35 @@ import pandas as pd
 import requests
 import streamlit as st
 
-# ==========================================================
-# MOTOR ELEITORAL 2026
-# A = Lula | B = Flávio Bolsonaro
-# Dados oficiais: arquivos JSON públicos do TSE
-# ==========================================================
-
-st.set_page_config(
-    page_title="Motor Eleitoral 2026",
-    page_icon="🗳️",
-    layout="wide",
-)
-
-# Eleição presidencial do segundo turno de 2026.
-BASE_TSE = "https://resultados.tse.jus.br/oficial/ele2026/6258/dados"
-COD_ELEICAO = "006258"
-COD_CARGO = "0001"
-INTERVALO_ATUALIZACAO = 20
-
-CANDIDATOS = {
-    "A": {
-        "numero": "13",
-        "nome": "Luiz Inácio Lula da Silva",
-        "curto": "Lula",
-        "partido": "PT",
-    },
-    "B": {
-        "numero": "22",
-        "nome": "Flávio Bolsonaro",
-        "curto": "Flávio Bolsonaro",
-        "partido": "PL",
-    },
-}
+st.set_page_config(page_title="Motor Eleitoral 2026", page_icon="🗳️", layout="wide")
 
 # ==========================================================
-# PREVISÃO INICIAL INFORMADA PELO USUÁRIO
-# A = Lula | B = Flávio Bolsonaro
+# CONFIGURAÇÃO
 # ==========================================================
+TZ = ZoneInfo("America/Sao_Paulo")
+BASE_TSE = "https://resultados.tse.jus.br/oficial"
+CICLO = "ele2026"
+URL_CONFIG = f"{BASE_TSE}/comum/config/ele-c.json"
 
+ELEICAO_2T = 6258  # 2º turno (confirmado no ele-c.json do TSE)
+ELEICAO_1T = 6257  # 1º turno (usado no modo ensaio e como base do Exterior)
+COD_CARGO = "0001"  # Presidente
+
+INTERVALO_ATUALIZACAO = 20  # segundos
+TTL_CACHE = 12  # segundos (cache compartilhado entre visitantes)
+INICIO_DIVULGACAO = datetime(2026, 10, 25, 17, 0, tzinfo=TZ)
+
+NUM_A, NUM_B = "13", "22"
+
+MODO_OFICIAL = "Oficial — 2º turno (TSE)"
+MODO_ENSAIO = "Ensaio — 1º turno real (teste do app)"
+MODO_SIM = "Simulador (números fictícios)"
+
+HEADERS = {"User-Agent": "Mozilla/5.0 MotorEleitoral/2026", "Accept": "application/json"}
+
+# ==========================================================
+# PREVISÃO-BASE (informada pelo usuário) — A = Lula | B = Flávio
+# ==========================================================
 PREVISAO_ESTADOS = {
     "SP": {"votos_esperados": 28_200_000, "pct_a": 43.0, "pct_b": 52.0},
     "MG": {"votos_esperados": 12_000_000, "pct_a": 49.0, "pct_b": 50.0},
@@ -74,517 +83,601 @@ PREVISAO_ESTADOS = {
     "AP": {"votos_esperados": 535_000, "pct_a": 49.0, "pct_b": 48.5},
     "RR": {"votos_esperados": 333_000, "pct_a": 26.0, "pct_b": 73.0},
 }
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 MotorEleitoral/2026",
-    "Accept": "application/json",
-}
+UNIDADES = list(PREVISAO_ESTADOS) + ["ZZ"]  # 27 UFs + Exterior
 
 
+# ==========================================================
+# UTILITÁRIOS
+# ==========================================================
 def numero_inteiro(valor):
     try:
-        return int(float(str(valor or "0").replace(",", ".")))
+        return int(float(str(valor if valor is not None else "0").replace(",", ".")))
     except (ValueError, TypeError):
         return 0
 
 
 def numero_decimal(valor):
     try:
-        return float(str(valor or "0").replace(",", "."))
+        return float(str(valor if valor is not None else "0").replace(",", "."))
     except (ValueError, TypeError):
         return 0.0
 
 
-def formatar_numero(valor):
+def fmt_num(valor):
     return f"{int(round(valor)):,}".replace(",", ".")
 
 
-def formatar_percentual(valor):
+def fmt_pct(valor):
     return f"{valor:.2f}%".replace(".", ",")
 
 
-def normalizar_percentuais(pct_a, pct_b):
-    total = pct_a + pct_b
+def sem_acento(texto):
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", str(texto)) if not unicodedata.combining(c)
+    ).upper()
+
+
+def normalizar(pa, pb):
+    total = pa + pb
     if total <= 0:
         return 50.0, 50.0
-    return pct_a / total * 100, pct_b / total * 100
+    return pa / total * 100, pb / total * 100
 
 
 # ==========================================================
-# CONSULTA AOS ARQUIVOS PÚBLICOS DO TSE
+# DOWNLOAD (cache compartilhado + último dado bom + paralelo)
 # ==========================================================
+class SemArquivo(Exception):
+    """Arquivo ainda não publicado pelo TSE (HTTP 403/404)."""
 
-def url_resultado(abrangencia):
+
+@st.cache_resource
+def _cache_http():
+    return {"dados": {}, "ultimo_bom": {}, "lock": threading.Lock()}
+
+
+def baixar_json(url, cache):
+    """Retorna (json, obsoleto). Obsoleto=True se usou o último dado bom."""
+    agora = time.time()
+    with cache["lock"]:
+        item = cache["dados"].get(url)
+    if item and agora - item[0] < TTL_CACHE:
+        if isinstance(item[1], Exception):
+            raise item[1]
+        return item[1], item[2]
+
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=10)
+        if resp.status_code in (403, 404):
+            raise SemArquivo(f"HTTP {resp.status_code}")
+        resp.raise_for_status()
+        dados = json.loads(resp.content.decode("utf-8-sig"))
+    except SemArquivo as erro:
+        with cache["lock"]:
+            cache["dados"][url] = (agora, erro, False)
+        raise
+    except Exception as erro:
+        # Falha transitória: se já houve leitura boa, mantém ela.
+        with cache["lock"]:
+            bom = cache["ultimo_bom"].get(url)
+            if bom is not None:
+                cache["dados"][url] = (agora, bom, True)
+                return bom, True
+            cache["dados"][url] = (agora, erro, False)
+        raise
+
+    with cache["lock"]:
+        cache["ultimo_bom"][url] = dados
+        cache["dados"][url] = (agora, dados, False)
+    return dados, False
+
+
+# ==========================================================
+# LEITURA TOLERANTE DO JSON DO TSE
+# ==========================================================
+def url_resultado(abrangencia, eleicao):
     uf = abrangencia.lower()
-    return (
-        f"{BASE_TSE}/{uf}/"
-        f"{uf}-c{COD_CARGO}-e{COD_ELEICAO}-u.json"
-    )
+    return f"{BASE_TSE}/{CICLO}/{eleicao}/dados/{uf}/{uf}-c{COD_CARGO}-e{int(eleicao):06d}-u.json"
 
 
-@st.cache_data(ttl=15, show_spinner=False)
-def baixar_json(url):
-    resposta = requests.get(
-        url,
-        headers=HEADERS,
-        timeout=15,
-    )
-    resposta.raise_for_status()
-    return resposta.json()
+def achar_chave(obj, chaves, prof_max=3):
+    """Procura a 1ª chave (do nível mais raso para o mais fundo) com valor simples."""
+    fila = [(obj, 0)]
+    while fila:
+        no, prof = fila.pop(0)
+        if not isinstance(no, dict):
+            continue
+        for k in chaves:
+            v = no.get(k)
+            if v is not None and not isinstance(v, (dict, list)):
+                return v
+        if prof < prof_max:
+            fila.extend((v, prof + 1) for v in no.values() if isinstance(v, dict))
+    return None
 
 
-def extrair_candidatos(objeto):
-    """
-    Os candidatos aparecem aninhados em estruturas de cargo,
-    agrupamentos, partidos e listas 'cand'.
-    Percorre o JSON e procura os números 13 e 22.
-    """
-    encontrados = {}
-
-    def percorrer(no):
+def achar_todos(obj, chave):
+    pilha = [obj]
+    while pilha:
+        no = pilha.pop()
         if isinstance(no, dict):
-            numero = str(no.get("n", "")).strip()
-            nome = str(no.get("nm", "")).upper()
-            nome_urna = str(no.get("nmu", "")).upper()
-
-            if numero == "13" and (
-                "LULA" in nome or "LULA" in nome_urna
-            ):
-                encontrados["A"] = {
-                    "votos": numero_inteiro(no.get("vap")),
-                    "percentual_tse": numero_decimal(no.get("pvap")),
-                    "nome": no.get("nmu") or no.get("nm") or "Lula",
-                }
-
-            elif numero == "22" and (
-                "FLAVIO" in nome
-                or "FLÁVIO" in nome
-                or "FLAVIO" in nome_urna
-                or "FLÁVIO" in nome_urna
-            ):
-                encontrados["B"] = {
-                    "votos": numero_inteiro(no.get("vap")),
-                    "percentual_tse": numero_decimal(no.get("pvap")),
-                    "nome": no.get("nmu") or no.get("nm") or "Flávio Bolsonaro",
-                }
-
-            for valor in no.values():
-                percorrer(valor)
-
+            if chave in no and not isinstance(no[chave], (dict, list)):
+                yield no[chave]
+            pilha.extend(v for v in no.values() if isinstance(v, (dict, list)))
         elif isinstance(no, list):
-            for item in no:
-                percorrer(item)
-
-    percorrer(objeto)
-    return encontrados
+            pilha.extend(v for v in no if isinstance(v, (dict, list)))
 
 
-def extrair_resumo(objeto):
-    secoes = objeto.get("s", {}) or {}
-    eleitorado = objeto.get("e", {}) or {}
-    votos = objeto.get("v", {}) or {}
+def extrair_candidatos(obj):
+    """Acha os candidatos 13 e 22 em qualquer nível do JSON."""
+    achados = {NUM_A: [], NUM_B: []}
+    pilha = [obj]
+    while pilha:
+        no = pilha.pop()
+        if isinstance(no, dict):
+            n = str(no.get("n", "")).strip()
+            if n in achados and "vap" in no:
+                achados[n].append(no)
+            pilha.extend(v for v in no.values() if isinstance(v, (dict, list)))
+        elif isinstance(no, list):
+            pilha.extend(v for v in no if isinstance(v, (dict, list)))
 
+    def escolher(lista, nomes):
+        if not lista:
+            return None
+        preferidos = [
+            c
+            for c in lista
+            if any(x in sem_acento(f"{c.get('nm', '')} {c.get('nmu', '')}") for x in nomes)
+        ]
+        return max(preferidos or lista, key=lambda c: numero_inteiro(c.get("vap")))
+
+    a = escolher(achados[NUM_A], ("LULA",))
+    b = escolher(achados[NUM_B], ("FLAVIO", "BOLSONARO"))
+    return a, b
+
+
+def consultar(uf, eleicao, cache):
+    url = url_resultado(uf, eleicao)
+    obj, obsoleto = baixar_json(url, cache)
+    a, b = extrair_candidatos(obj)
+    if a is None or b is None:
+        raise ValueError("candidatos 13 e 22 não encontrados no arquivo")
+
+    pst = achar_chave(obj, ["pst"])
+    ts = numero_inteiro(achar_chave(obj, ["ts"]))
+    st_ = numero_inteiro(achar_chave(obj, ["st"]))
+    if pst is not None:
+        pct_secoes = numero_decimal(pst)
+    elif ts > 0:
+        pct_secoes = st_ / ts * 100
+    else:
+        pct_secoes = 0.0
+
+    dg = achar_chave(obj, ["dg"]) or ""
+    hg = achar_chave(obj, ["hg"]) or ""
     return {
-        "secoes_total": numero_inteiro(secoes.get("ts")),
-        "secoes_apuradas": numero_inteiro(secoes.get("st")),
-        "pct_secoes": numero_decimal(secoes.get("pst")),
-        "eleitorado_total": numero_inteiro(eleitorado.get("te")),
-        "votos_validos": numero_inteiro(votos.get("vvc")),
-        "atualizado_em": (
-            f"{objeto.get('dg', '')} {objeto.get('hg', '')}".strip()
-        ),
-        "status_dados": objeto.get("dv", ""),
+        "uf": uf.upper(),
+        "lula_real": numero_inteiro(a.get("vap")),
+        "flavio_real": numero_inteiro(b.get("vap")),
+        "pct_secoes": max(0.0, min(100.0, pct_secoes)),
+        "secoes_total": ts,
+        "secoes_apuradas": st_,
+        "atualizado_em": f"{dg} {hg}".strip(),
+        "obsoleto": obsoleto,
+        "url": url,
     }
 
 
-def consultar_abrangencia(uf):
-    url = url_resultado(uf)
-    objeto = baixar_json(url)
-    candidatos = extrair_candidatos(objeto)
-    resumo = extrair_resumo(objeto)
+def descobrir_codigos(cache):
+    """2º turno = 6258 (confirmado). Também lê o ele-c.json do TSE como segurança."""
+    codigos = [ELEICAO_2T]
+    try:
+        cfg, _ = baixar_json(URL_CONFIG, cache)
+        for v in achar_todos(cfg, "cdt2"):
+            cod = numero_inteiro(v)
+            if cod and cod not in codigos:
+                codigos.append(cod)
+    except Exception:
+        pass
+    return codigos[:5]
 
-    if "A" not in candidatos or "B" not in candidatos:
-        raise ValueError(
-            f"Os candidatos 13 e 22 não foram reconhecidos no arquivo de {uf}."
-        )
 
+def prior_exterior(cache):
+    """Exterior não tem previsão do usuário: usa o resultado REAL do 1º turno como base."""
+    try:
+        d = consultar("zz", ELEICAO_1T, cache)
+        total = d["lula_real"] + d["flavio_real"]
+        if total > 0:
+            pa, pb = normalizar(d["lula_real"], d["flavio_real"])
+            return {"votos_esperados": total, "pct_a": pa, "pct_b": pb}
+    except Exception:
+        pass
+    return None
+
+
+# ==========================================================
+# CARREGAMENTO (oficial / ensaio / simulador)
+# ==========================================================
+def carregar_oficial(eleicao_fixa=None):
+    cache = _cache_http()
+    codigos = [eleicao_fixa] if eleicao_fixa else descobrir_codigos(cache)
+
+    nacional, eleicao, motivos = None, None, []
+    for cod in codigos:
+        try:
+            nacional = consultar("br", cod, cache)
+            eleicao = cod
+            break
+        except SemArquivo as e:
+            motivos.append(f"Eleição {cod}: arquivo nacional ainda não publicado ({e})")
+        except Exception as e:
+            motivos.append(f"Eleição {cod}: {e}")
+
+    prior_zz = prior_exterior(cache)
+
+    if nacional is None:
+        return {
+            "status": "aguardando",
+            "eleicao": codigos[0],
+            "nacional": None,
+            "unidades": {u: None for u in UNIDADES},
+            "erros": motivos,
+            "prior_zz": prior_zz,
+        }
+
+    def tarefa(uf):
+        try:
+            return uf, consultar(uf, eleicao, cache), None
+        except Exception as e:
+            return uf, None, f"{uf}: {e}"
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        resultados = list(ex.map(tarefa, UNIDADES))
+
+    unidades = {uf: d for uf, d, _ in resultados}
+    erros = [e for _, _, e in resultados if e]
+    tem_voto = (nacional["lula_real"] + nacional["flavio_real"]) > 0
+    status = "aguardando" if (nacional["pct_secoes"] <= 0 and not tem_voto) else (
+        "concluido" if nacional["pct_secoes"] >= 99.99 else "apurando"
+    )
     return {
-        "uf": uf,
-        "lula_real": candidatos["A"]["votos"],
-        "flavio_real": candidatos["B"]["votos"],
-        "url": url,
-        **resumo,
+        "status": status,
+        "eleicao": eleicao,
+        "nacional": nacional,
+        "unidades": unidades,
+        "erros": erros,
+        "prior_zz": prior_zz,
+    }
+
+
+def carregar_simulado(progresso, desvio_pp):
+    unidades = {}
+    for uf, base in PREVISAO_ESTADOS.items():
+        pa, _ = normalizar(base["pct_a"], base["pct_b"])
+        sa_real = min(max(pa + desvio_pp, 1.0), 99.0) / 100
+        total = base["votos_esperados"] * progresso / 100
+        unidades[uf] = {
+            "uf": uf,
+            "lula_real": int(total * sa_real),
+            "flavio_real": int(total * (1 - sa_real)),
+            "pct_secoes": float(progresso),
+            "secoes_total": 1000,
+            "secoes_apuradas": int(10 * progresso),
+            "atualizado_em": "SIMULADO",
+            "obsoleto": False,
+            "url": "",
+        }
+    unidades["ZZ"] = None
+    soma_a = sum(u["lula_real"] for u in unidades.values() if u)
+    soma_b = sum(u["flavio_real"] for u in unidades.values() if u)
+    nacional = {
+        "lula_real": soma_a,
+        "flavio_real": soma_b,
+        "pct_secoes": float(progresso),
+        "secoes_total": 27_000,
+        "secoes_apuradas": int(270 * progresso),
+        "atualizado_em": "SIMULADO",
+        "url": "",
+    }
+    status = "aguardando" if progresso <= 0 else ("concluido" if progresso >= 100 else "apurando")
+    return {
+        "status": status,
+        "eleicao": None,
+        "nacional": nacional,
+        "unidades": unidades,
+        "erros": [],
+        "prior_zz": None,
     }
 
 
 # ==========================================================
 # MOTOR DE PROJEÇÃO
-# Compara a previsão-base com os dados reais disponíveis.
 # ==========================================================
+def projetar(uf, dados, prior, escala=1.0):
+    """
+    Mistura previsão-base (prior) e votos reais.
+      - sem votos apurados  -> previsão pura
+      - 100% apurado        -> votos reais
+      - entre os dois       -> total final = mistura entre o total previsto e o total
+                               extrapolado dos votos reais (votos/progresso);
+                               votos restantes divididos por uma média ponderada entre a
+                               previsão e o desempenho real, com peso do real = progresso
+                               (máx. 95%).
+    """
+    real_a = max(0, dados["lula_real"]) if dados else 0
+    real_b = max(0, dados["flavio_real"]) if dados else 0
+    real_total = real_a + real_b
+    p = max(0.0, min(1.0, dados["pct_secoes"] / 100)) if dados else 0.0
 
-def projetar_estado(dados):
-    uf = dados["uf"]
-    base = PREVISAO_ESTADOS[uf]
-
-    pct_a_base, pct_b_base = normalizar_percentuais(
-        base["pct_a"],
-        base["pct_b"],
-    )
-
-    total_previsto = base["votos_esperados"]
-    previsao_a = total_previsto * pct_a_base / 100
-    previsao_b = total_previsto * pct_b_base / 100
-
-    real_a = max(0, dados["lula_real"])
-    real_b = max(0, dados["flavio_real"])
-    real_dois = real_a + real_b
-
-    progresso = max(0.0, min(100.0, dados["pct_secoes"]))
-
-    if progresso <= 0 or real_dois <= 0:
-        proj_a = previsao_a
-        proj_b = previsao_b
-        metodo = "Previsão-base: apuração ainda sem dados úteis"
-
-    elif progresso >= 99.99:
-        # Seções praticamente totalizadas: usa a votação real.
-        proj_a = float(real_a)
-        proj_b = float(real_b)
-        metodo = "Votação real: totalização praticamente concluída"
-
+    if prior:
+        t0 = prior["votos_esperados"] * escala
+        sa0n, sb0n = normalizar(prior["pct_a"], prior["pct_b"])
+        sa0 = sa0n / 100
     else:
-        # A previsão estadual é uma estimativa de escala, não um
-        # total oficial de votos válidos. Usa-se o progresso das
-        # seções como aproximação do avanço da apuração.
-        total_final_estimado = max(total_previsto, real_dois)
-        total_restante_estimado = max(
-            0.0,
-            total_final_estimado - real_dois,
-        )
+        t0, sa0 = 0.0, 0.5
 
-        share_a_real = real_a / real_dois
-        share_b_real = real_b / real_dois
+    if real_total > 0 and p >= 0.9999:
+        pa, pb = float(real_a), float(real_b)
+        metodo = "Resultado real (totalização concluída)"
+    elif p <= 0 or real_total <= 0:
+        if prior:
+            pa, pb = t0 * sa0, t0 * (1 - sa0)
+            metodo = "Previsão-base (sem votos apurados)"
+        else:
+            pa = pb = 0.0
+            metodo = "Sem dados e sem previsão"
+    else:
+        total_extrap = real_total / p
+        sa_obs = real_a / real_total
+        if prior:
+            w = 0.0 if p < 0.02 else min(0.95, p)
+            total_final = (1 - w) * t0 + w * total_extrap
+            if p < 0.5:  # trava de segurança no início da apuração
+                total_final = min(max(total_final, 0.75 * t0), 1.25 * t0)
+            sa_resto = (1 - w) * sa0 + w * sa_obs
+            metodo = "Votos reais + previsão ajustada"
+        else:
+            total_final = total_extrap
+            sa_resto = sa_obs
+            metodo = "Extrapolação dos votos reais (sem previsão)"
+        total_final = max(total_final, real_total)
+        resto = total_final - real_total
+        pa = real_a + resto * sa_resto
+        pb = real_b + resto * (1 - sa_resto)
 
-        # A influência dos dados reais cresce com a apuração.
-        peso_real = min(0.95, max(0.10, progresso / 100))
-
-        share_a = (
-            (1 - peso_real) * pct_a_base / 100
-            + peso_real * share_a_real
-        )
-        share_b = (
-            (1 - peso_real) * pct_b_base / 100
-            + peso_real * share_b_real
-        )
-
-        soma_shares = share_a + share_b
-        if soma_shares > 0:
-            share_a /= soma_shares
-            share_b /= soma_shares
-
-        proj_a = real_a + total_restante_estimado * share_a
-        proj_b = real_b + total_restante_estimado * share_b
-        metodo = "Votos reais + previsão ajustada"
-
-    total_projetado = proj_a + proj_b
-
-    pct_proj_a = proj_a / total_projetado * 100 if total_projetado else 0
-    pct_proj_b = proj_b / total_projetado * 100 if total_projetado else 0
+    total_proj = pa + pb
+    pct_a = pa / total_proj * 100 if total_proj else 0.0
+    pct_b = pb / total_proj * 100 if total_proj else 0.0
+    base_a = normalizar(prior["pct_a"], prior["pct_b"])[0] if prior else None
+    lider_base = None
+    if prior:
+        lider_base = "Lula" if prior["pct_a"] > prior["pct_b"] else "Flávio"
+    lider_proj = "Lula" if pa > pb else ("Flávio" if pb > pa else "Empate")
 
     return {
-        **dados,
-        "votos_esperados": total_previsto,
-        "pct_a_inicial": base["pct_a"],
-        "pct_b_inicial": base["pct_b"],
-        "proj_lula": proj_a,
-        "proj_flavio": proj_b,
-        "pct_proj_lula": pct_proj_a,
-        "pct_proj_flavio": pct_proj_b,
-        "metodo_projecao": metodo,
+        "UF": "ZZ (Exterior)" if uf == "ZZ" else uf,
+        "uf": uf,
+        "votos_previstos": t0,
+        "pct_secoes": dados["pct_secoes"] if dados else 0.0,
+        "secoes_apuradas": dados["secoes_apuradas"] if dados else 0,
+        "secoes_total": dados["secoes_total"] if dados else 0,
+        "lula_real": real_a,
+        "flavio_real": real_b,
+        "pct_a_base": base_a,
+        "proj_lula": pa,
+        "proj_flavio": pb,
+        "pct_proj_lula": pct_a,
+        "pct_proj_flavio": pct_b,
+        "desvio_lula_pp": (pct_a - base_a) if base_a is not None and total_proj else None,
+        "lider_base": lider_base,
+        "lider_proj": lider_proj,
+        "virou": bool(lider_base and total_proj and lider_proj not in (lider_base, "Empate")),
+        "metodo": metodo,
+        "sem_dado": dados is None,
+        "obsoleto": bool(dados and dados.get("obsoleto")),
     }
 
 
-def coletar_estados():
-    resultados = []
-    erros = []
+@st.cache_resource
+def _historico():
+    return {"series": {}, "lock": threading.Lock()}
 
-    for uf in PREVISAO_ESTADOS:
-        try:
-            resultados.append(
-                projetar_estado(consultar_abrangencia(uf))
-            )
-        except Exception as erro:
-            erros.append(f"{uf}: {erro}")
 
-    return pd.DataFrame(resultados), erros
+def registrar_historico(chave, nacional, total_a, total_b):
+    h = _historico()
+    pct_a = total_a / (total_a + total_b) * 100 if (total_a + total_b) else 0
+    ponto = {
+        "carimbo": nacional.get("atualizado_em", ""),
+        "Hora": datetime.now(TZ).strftime("%H:%M:%S"),
+        "Seções apuradas %": nacional["pct_secoes"],
+        "Lula projeção %": pct_a,
+        "Flávio projeção %": 100 - pct_a,
+        "Diferença projetada (Lula − Flávio)": total_a - total_b,
+    }
+    with h["lock"]:
+        serie = h["series"].setdefault(chave, [])
+        if not serie or serie[-1]["carimbo"] != ponto["carimbo"] or abs(
+            serie[-1]["Diferença projetada (Lula − Flávio)"] - ponto["Diferença projetada (Lula − Flávio)"]
+        ) > 1:
+            serie.append(ponto)
+            del serie[:-3000]
+        return list(serie)
 
 
 # ==========================================================
 # INTERFACE
 # ==========================================================
-
-st.title("🗳️ Motor Eleitoral 2026")
-st.caption(
-    "A = Lula (PT) | B = Flávio Bolsonaro (PL)"
-)
-
-st.info(
-    "O motor compara a previsão inicial de cada estado com os "
-    "dados oficiais disponíveis e recalcula as projeções. "
-    "As projeções são estimativas, não resultados oficiais."
-)
-
-with st.sidebar:
-    st.header("Painel de controle")
-    modo = st.radio(
-        "Modo",
-        ["Dados oficiais do TSE", "Simulador de teste"],
-    )
-    st.write("Intervalo de atualização: 20 segundos")
-    st.write("Abrangência: 27 unidades da Federação")
-    st.markdown(
-        "[Consultar portal oficial do TSE](https://resultados.tse.jus.br/)"
-    )
+def mostrar_df(df):
+    try:
+        st.dataframe(df, width="stretch", hide_index=True)
+    except Exception:
+        st.dataframe(df, use_container_width=True, hide_index=True)
 
 
-def exibir_painel():
-    agora = datetime.now(
-        ZoneInfo("America/Sao_Paulo")
-    ).strftime("%d/%m/%Y %H:%M:%S")
+def painel(modo, escala, prog_sim, desvio_sim):
+    agora = datetime.now(TZ)
+    st.caption(f"Última atualização do painel: {agora.strftime('%d/%m/%Y %H:%M:%S')} (Brasília)")
 
-    st.caption(f"Última atualização do painel: {agora}")
-
-    if modo == "Simulador de teste":
+    # ---------- carga ----------
+    if modo == MODO_SIM:
+        dados = carregar_simulado(prog_sim, desvio_sim)
+        st.warning("MODO SIMULADOR: números fictícios, sem relação com a apuração oficial.")
+    elif modo == MODO_ENSAIO:
+        dados = carregar_oficial(ELEICAO_1T)
         st.warning(
-            "MODO SIMULADOR: os números abaixo são fictícios "
-            "e não representam uma apuração oficial."
+            "MODO ENSAIO: usando os dados REAIS (já encerrados) do 1º turno, apenas para "
+            "testar o app. Os números NÃO são do 2º turno."
         )
-
-        progresso = st.slider(
-            "Progresso fictício da apuração",
-            min_value=0,
-            max_value=100,
-            value=35,
-            step=5,
-        )
-
-        linhas = []
-
-        for uf, base in PREVISAO_ESTADOS.items():
-            pct_a, pct_b = normalizar_percentuais(
-                base["pct_a"], base["pct_b"]
-            )
-
-            # Valores sintéticos apenas para testar a interface.
-            total_teste = base["votos_esperados"] * progresso / 100
-
-            dados = {
-                "uf": uf,
-                "lula_real": int(total_teste * pct_a / 100),
-                "flavio_real": int(total_teste * pct_b / 100),
-                "pct_secoes": float(progresso),
-                "secoes_total": 1000,
-                "secoes_apuradas": int(1000 * progresso / 100),
-                "eleitorado_total": base["votos_esperados"],
-                "votos_validos": int(total_teste),
-                "atualizado_em": "SIMULADO",
-                "status_dados": "SIMULADO",
-                "url": "",
-            }
-
-            linhas.append(projetar_estado(dados))
-
-        df = pd.DataFrame(linhas)
-        erros = []
-        pct_nacional = float(progresso)
-        lula_real_nacional = int(df["lula_real"].sum())
-        flavio_real_nacional = int(df["flavio_real"].sum())
-        secoes_total_nacional = int(df["secoes_total"].sum())
-        secoes_apuradas_nacional = int(df["secoes_apuradas"].sum())
-        url_nacional = ""
-
     else:
-        # O resultado nacional é a fonte de referência para o
-        # percentual oficial de seções e os totais nacionais.
-        try:
-            nacional = consultar_abrangencia("BR")
-        except Exception as erro:
-            st.error(
-                "Não foi possível ler o arquivo nacional do TSE. "
-                "Nenhum resultado simulado será apresentado como oficial."
+        dados = carregar_oficial()
+
+    status = dados["status"]
+    nacional = dados["nacional"]
+
+    # ---------- faixa de status ----------
+    if status == "aguardando":
+        if modo == MODO_OFICIAL and agora < INICIO_DIVULGACAO:
+            falta = INICIO_DIVULGACAO - agora
+            h, resto = divmod(int(falta.total_seconds()), 3600)
+            m, s = divmod(resto, 60)
+            st.info(
+                f"⏳ Aguardando o início da divulgação do TSE (a partir das 17h de 25/10). "
+                f"Faltam {h:02d}h{m:02d}min{s:02d}s. O app consulta o TSE sozinho a cada "
+                f"{INTERVALO_ATUALIZACAO}s e começa a apuração automaticamente. "
+                "Enquanto isso, a projeção abaixo mostra apenas a previsão-base."
             )
-            st.code(str(erro))
-            st.link_button(
-                "Abrir resultados oficiais",
-                "https://resultados.tse.jus.br/",
+        else:
+            st.info(
+                "⏳ Os arquivos de apuração ainda não foram publicados pelo TSE (ou ainda "
+                "sem votos). O app continua tentando automaticamente. A projeção abaixo é "
+                "apenas a previsão-base."
             )
-            return
+    elif status == "apurando":
+        st.success("🟢 Apuração em andamento — projeção sendo recalculada em tempo real.")
+    else:
+        st.success("🏁 Totalização concluída — valores finais baseados nos votos reais.")
 
-        df, erros = coletar_estados()
-
-        if df.empty:
-            st.error(
-                "Nenhum arquivo estadual foi lido com sucesso. "
-                "Confira os arquivos e a conectividade do TSE."
-            )
-            if erros:
-                st.code("\n".join(erros[:10]))
-            st.link_button(
-                "Abrir resultados oficiais",
-                "https://resultados.tse.jus.br/",
-            )
-            return
-
-        pct_nacional = nacional["pct_secoes"]
-        lula_real_nacional = nacional["lula_real"]
-        flavio_real_nacional = nacional["flavio_real"]
-        secoes_total_nacional = nacional["secoes_total"]
-        secoes_apuradas_nacional = nacional["secoes_apuradas"]
-        url_nacional = nacional["url"]
-
-    # ------------------------------------------------------
-    # INDICADORES NACIONAIS
-    # ------------------------------------------------------
-
-    st.subheader("1. Consolidado nacional")
-
-    c1, c2, c3, c4 = st.columns(4)
-
-    c1.metric(
-        "Seções apuradas",
-        formatar_percentual(pct_nacional),
-        f"{formatar_numero(secoes_apuradas_nacional)} de "
-        f"{formatar_numero(secoes_total_nacional)}",
-    )
-
-    c2.metric(
-        "Lula — votos reais",
-        formatar_numero(lula_real_nacional),
-    )
-
-    c3.metric(
-        "Flávio — votos reais",
-        formatar_numero(flavio_real_nacional),
-    )
-
-    c4.metric(
-        "Estados com dados recebidos",
-        f"{len(df)} de 27",
-    )
-
-    # ------------------------------------------------------
-    # PROJEÇÃO NACIONAL
-    # ------------------------------------------------------
-
-    st.subheader("2. Projeção final do motor")
+    # ---------- projeção por unidade ----------
+    linhas = []
+    for uf in UNIDADES:
+        if uf == "ZZ":
+            prior, esc = dados["prior_zz"], 1.0
+        else:
+            prior, esc = PREVISAO_ESTADOS[uf], escala
+        linhas.append(projetar(uf, dados["unidades"].get(uf), prior, esc))
+    df = pd.DataFrame(linhas)
 
     total_a = float(df["proj_lula"].sum())
     total_b = float(df["proj_flavio"].sum())
-    total_projetado = total_a + total_b
-
-    pct_a = total_a / total_projetado * 100 if total_projetado else 0
-    pct_b = total_b / total_projetado * 100 if total_projetado else 0
+    total_proj = total_a + total_b
+    pct_a = total_a / total_proj * 100 if total_proj else 0
+    pct_b = total_b / total_proj * 100 if total_proj else 0
     diferenca = abs(total_a - total_b)
 
+    # ---------- 1. consolidado nacional ----------
+    st.subheader("1. Consolidado nacional (votos reais apurados)")
+    if nacional:
+        real_a, real_b = nacional["lula_real"], nacional["flavio_real"]
+        pct_sec = nacional["pct_secoes"]
+        sec_ap, sec_tot = nacional["secoes_apuradas"], nacional["secoes_total"]
+    else:
+        real_a = real_b = 0
+        pct_sec, sec_ap, sec_tot = 0.0, 0, 0
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(
+        "Seções apuradas",
+        fmt_pct(pct_sec),
+        f"{fmt_num(sec_ap)} de {fmt_num(sec_tot)}" if sec_tot else None,
+    )
+    c2.metric("Lula — votos reais", fmt_num(real_a))
+    c3.metric("Flávio — votos reais", fmt_num(real_b))
+    lidos = int((~df["sem_dado"]).sum())
+    c4.metric("Unidades com dados", f"{lidos} de {len(UNIDADES)}")
+
+    if nacional and modo != MODO_SIM:
+        soma_real = int(df["lula_real"].sum() + df["flavio_real"].sum())
+        nac_total = real_a + real_b
+        if nac_total > 0 and abs(soma_real - nac_total) / nac_total > 0.005:
+            st.warning(
+                f"Atenção: a soma das 28 unidades ({fmt_num(soma_real)} votos) difere do total "
+                f"nacional do TSE ({fmt_num(nac_total)}). Pode ser atraso entre arquivos; "
+                "se persistir, confira a seção de diagnóstico."
+            )
+
+    # ---------- 2. projeção ----------
+    st.subheader("2. Projeção final do motor")
     p1, p2, p3 = st.columns(3)
-
-    p1.metric(
-        "Lula — projeção",
-        formatar_numero(total_a),
-        formatar_percentual(pct_a),
-    )
-
-    p2.metric(
-        "Flávio Bolsonaro — projeção",
-        formatar_numero(total_b),
-        formatar_percentual(pct_b),
-    )
-
+    p1.metric("Lula — projeção", fmt_num(total_a), fmt_pct(pct_a))
+    p2.metric("Flávio Bolsonaro — projeção", fmt_num(total_b), fmt_pct(pct_b))
     if total_a > total_b:
         lider = "Lula à frente na projeção"
     elif total_b > total_a:
         lider = "Flávio à frente na projeção"
     else:
         lider = "Empate na projeção"
+    p3.metric("Diferença projetada", fmt_num(diferenca), lider)
 
-    p3.metric(
-        "Diferença projetada",
-        formatar_numero(diferenca),
-        lider,
+    a_apurar = max(0.0, total_proj - (real_a + real_b)) if nacional else total_proj
+    q1, q2, q3 = st.columns(3)
+    q1.metric("Votos a apurar (estimado)", fmt_num(a_apurar))
+    q2.metric("Total projetado de votos", fmt_num(total_proj))
+    virou = df[df["virou"]]["uf"].tolist()
+    q3.metric(
+        "Estados que virariam vs. previsão-base",
+        str(len(virou)),
+        ", ".join(virou) if virou else "nenhum",
+        delta_color="off",
     )
 
-    st.caption(
-        "Os percentuais da projeção são calculados sobre a soma "
-        "projetada dos votos dos dois candidatos. Não são percentuais "
-        "oficiais do TSE. A previsão inicial fornecida é usada como "
-        "referência e é ajustada conforme os dados reais chegam."
-    )
-
-    # ------------------------------------------------------
-    # TABELA ESTADUAL
-    # ------------------------------------------------------
-
-    st.subheader("3. Acompanhamento dos 27 estados")
-
-    colunas = [
-        "uf",
-        "votos_esperados",
-        "pct_secoes",
-        "secoes_apuradas",
-        "secoes_total",
-        "lula_real",
-        "flavio_real",
-        "pct_a_inicial",
-        "pct_b_inicial",
-        "proj_lula",
-        "pct_proj_lula",
-        "proj_flavio",
-        "pct_proj_flavio",
-    ]
-
-    tabela = df[colunas].copy()
-
-    tabela.rename(
-        columns={
-            "uf": "UF",
-            "votos_esperados": "Votos previstos base",
-            "pct_secoes": "Seções apuradas %",
-            "secoes_apuradas": "Seções apuradas",
-            "secoes_total": "Total de seções",
-            "lula_real": "Lula votos reais",
-            "flavio_real": "Flávio votos reais",
-            "pct_a_inicial": "Lula previsão inicial %",
-            "pct_b_inicial": "Flávio previsão inicial %",
-            "proj_lula": "Lula projeção votos",
-            "pct_proj_lula": "Lula projeção %",
-            "proj_flavio": "Flávio projeção votos",
-            "pct_proj_flavio": "Flávio projeção %",
-        },
-        inplace=True,
-    )
-
-    colunas_inteiras = [
-        "Votos previstos base",
-        "Seções apuradas",
-        "Total de seções",
-        "Lula votos reais",
-        "Flávio votos reais",
-        "Lula projeção votos",
-        "Flávio projeção votos",
-    ]
-
-    for coluna in colunas_inteiras:
-        tabela[coluna] = (
-            tabela[coluna].fillna(0).round(0).astype("int64")
+    if total_proj and diferenca / total_proj < 0.005:
+        st.warning(
+            "⚠️ Disputa muito apertada: a diferença projetada é menor que 0,5% dos votos, "
+            "dentro da margem de erro do modelo. Não trate como resultado."
         )
 
-    tabela = tabela.sort_values("UF")
-
-    st.dataframe(
-        tabela,
-        use_container_width=True,
-        hide_index=True,
+    st.caption(
+        "Percentuais calculados sobre a soma dos votos dos dois candidatos (27 UFs + Exterior). "
+        "Não são percentuais oficiais do TSE. Projeção = estimativa, não resultado oficial."
     )
+
+    # ---------- 3. evolução ----------
+    if status != "aguardando" and nacional:
+        chave = f"{modo}|{dados['eleicao']}"
+        serie = registrar_historico(chave, nacional, total_a, total_b)
+        if len(serie) >= 2:
+            st.subheader("3. Evolução da projeção")
+            dh = pd.DataFrame(serie).set_index("Hora")
+            g1, g2 = st.columns(2)
+            g1.caption("Projeção % de cada candidato")
+            g1.line_chart(dh[["Lula projeção %", "Flávio projeção %"]])
+            g2.caption("Diferença projetada em votos (Lula − Flávio)")
+            g2.line_chart(dh[["Diferença projetada (Lula − Flávio)"]])
+
+    # ---------- 4. tabela ----------
+    st.subheader("4. Acompanhamento por estado")
+    tabela = pd.DataFrame(
+        {
+            "UF": df["UF"],
+            "Votos previstos base": df["votos_previstos"].round(0).astype("int64"),
+            "Seções apuradas %": df["pct_secoes"].round(2),
+            "Seções apuradas": df["secoes_apuradas"],
+            "Total de seções": df["secoes_total"],
+            "Lula votos reais": df["lula_real"],
+            "Flávio votos reais": df["flavio_real"],
+            "Lula previsão % (norm.)": df["pct_a_base"].round(2),
+            "Lula projeção votos": df["proj_lula"].round(0).astype("int64"),
+            "Lula projeção %": df["pct_proj_lula"].round(2),
+            "Flávio projeção votos": df["proj_flavio"].round(0).astype("int64"),
+            "Flávio projeção %": df["pct_proj_flavio"].round(2),
+            "Desvio Lula vs previsão (p.p.)": df["desvio_lula_pp"].astype(float).round(2),
+            "Líder previsão": df["lider_base"],
+            "Líder projeção": df["lider_proj"],
+            "Método": df["metodo"],
+        }
+    ).sort_values("UF")
+    mostrar_df(tabela)
 
     st.download_button(
         "📥 Baixar tabela em CSV",
@@ -593,32 +686,76 @@ def exibir_painel():
         mime="text/csv",
     )
 
-    if erros:
-        with st.expander(
-            f"Estados com falha na consulta ({len(erros)})"
-        ):
-            st.write("\n".join(erros))
-
-    if url_nacional:
-        st.caption(f"Arquivo nacional consultado: {url_nacional}")
-
+    # ---------- diagnóstico ----------
+    with st.expander("Diagnóstico técnico"):
+        st.write(f"Eleição TSE consultada: **{dados['eleicao']}**")
+        if nacional and nacional.get("url"):
+            st.write(f"Arquivo nacional: {nacional['url']}")
+            st.write(f"Carimbo do TSE: {nacional.get('atualizado_em') or 'n/d'}")
+        st.write(f"Unidades com dado desatualizado (usando última leitura boa): "
+                 f"{int(df['obsoleto'].sum())}")
+        if dados["prior_zz"]:
+            st.write("Exterior (ZZ): previsão-base derivada do resultado real do 1º turno.")
+        else:
+            st.write("Exterior (ZZ): sem previsão-base; projetado só pelos votos reais.")
+        if dados["erros"]:
+            st.write("Falhas/avisos:")
+            st.code("\n".join(dados["erros"][:40]))
+        st.write(
+            "Unidades sem dado usam a previsão-base na projeção, para que o total nacional "
+            "nunca fique incompleto."
+        )
     st.caption(
-        "Fonte dos resultados oficiais: TSE. "
-        "Este aplicativo é independente e não substitui a divulgação oficial."
+        "Fonte dos resultados oficiais: TSE (resultados.tse.jus.br). Aplicativo independente; "
+        "não substitui a divulgação oficial."
     )
 
 
-# Atualização automática enquanto a sessão do app estiver ativa.
-if hasattr(st, "fragment"):
-    @st.fragment(run_every=INTERVALO_ATUALIZACAO)
-    def painel_automatico():
-        exibir_painel()
+def main():
+    st.title("🗳️ Motor Eleitoral 2026 — 2º turno")
+    st.caption("A = Lula (13, PT)  |  B = Flávio Bolsonaro (22, PL)")
 
-    painel_automatico()
-else:
-    st.error(
-        "A versão instalada do Streamlit não suporta atualização "
-        "automática por fragmentos. Atualize a dependência Streamlit."
-    )
-    exibir_painel()
-```
+    with st.sidebar:
+        st.header("Painel de controle")
+        modo = st.radio("Modo", [MODO_OFICIAL, MODO_ENSAIO, MODO_SIM], index=0)
+        escala_pct = st.slider(
+            "Ajuste dos totais previstos (%)",
+            min_value=80,
+            max_value=110,
+            value=100,
+            step=1,
+            help="100% = exatamente os totais informados. Mexa só se quiser testar "
+            "um cenário de comparecimento menor/maior.",
+        )
+        prog_sim, desvio_sim = 35, 0.0
+        if modo == MODO_SIM:
+            prog_sim = st.slider("Progresso fictício da apuração (%)", 0, 100, 35, 5)
+            desvio_sim = st.slider(
+                "Desvio fictício a favor de Lula (p.p.)", -10.0, 10.0, 0.0, 0.5
+            )
+        st.write(f"Atualização automática: {INTERVALO_ATUALIZACAO} s")
+        st.write("Abrangência: 27 UFs + Exterior")
+        st.markdown("[Portal oficial do TSE](https://resultados.tse.jus.br/)")
+
+    escala = escala_pct / 100
+
+    def corpo():
+        try:
+            painel(modo, escala, prog_sim, desvio_sim)
+        except Exception as erro:  # nunca derrubar o painel
+            st.error(f"Erro ao atualizar o painel (nova tentativa automática): {erro}")
+
+    fragmento = getattr(st, "fragment", None) or getattr(st, "experimental_fragment", None)
+    if fragmento is not None:
+        try:
+            fragmento(run_every=INTERVALO_ATUALIZACAO)(corpo)()
+            return
+        except TypeError:
+            pass
+    # Fallback para versões antigas do Streamlit
+    corpo()
+    time.sleep(INTERVALO_ATUALIZACAO)
+    st.rerun()
+
+
+main()
