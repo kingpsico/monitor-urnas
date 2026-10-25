@@ -2,7 +2,7 @@ import streamlit as st
 import random
 
 # ==============================================================================
-# DATABASES: MATRIZ DE PESOS DOS ESTADOS (BASEADO NO 1º TURNO)
+# DATABASES: MATRIZ DE PESOS DOS ESTADOS (BASEADO NO 1º TURNO DE 2026)
 # ==============================================================================
 DADOS_ESTADOS_1_TURNO = {
     "SP": {"votos_esperados": 28_200_000, "pct_a": 43.0, "pct_b": 52.0},
@@ -35,7 +35,7 @@ DADOS_ESTADOS_1_TURNO = {
 }
 
 # ==============================================================================
-# 1. SIMULADOR COM RUÍDO ELEITORAL REALISTA
+# 1. SIMULADOR COM CONFIGURAÇÃO DE DESVIO REAL
 # ==============================================================================
 def buscar_dados_simulados(progresso_geral):
     dados_apuracao_estados = {}
@@ -51,11 +51,15 @@ def buscar_dados_simulados(progresso_geral):
             
         votos_apurados = int(info["votos_esperados"] * (progresso_uf / 100))
         
+        # Simula que neste segundo turno o Candidato A começou com +1.2% de força real
+        # em relação ao histórico do primeiro turno (Desvio Real do Cenário)
+        desvio_real_cenario = 1.2 
+        
         if 0 < progresso_uf < 100:
-            fator_variacao = random.uniform(-3.5, 3.5) * (1 - (progresso_uf / 100))
-            pct_ajustado_a = max(0, min(100, info["pct_a"] + fator_variacao))
+            fator_ruido = random.uniform(-1.5, 1.5) * (1 - (progresso_uf / 100))
+            pct_ajustado_a = max(0, min(100, info["pct_a"] + desvio_real_cenario + fator_ruido))
         else:
-            pct_ajustado_a = info["pct_a"]
+            pct_ajustado_a = info["pct_a"] + (desvio_real_cenario if progresso_uf == 100 else 0)
             
         votos_a = int(votos_apurados * (pct_ajustado_a / 100))
         votos_b = votos_apurados - votos_a
@@ -70,7 +74,7 @@ def buscar_dados_simulados(progresso_geral):
     return dados_apuracao_estados
 
 # ==============================================================================
-# 2. PROCESSADOR DE PROJEÇÃO ESTADUAL E NACIONAL
+# 2. MOTOR DE AJUSTE DINÂMICO E APRENDIZADO EM TEMPO REAL (Mecanismo de Correção)
 # ==============================================================================
 def processar_modelos_eleitorais(dados_estados, progresso_geral):
     dados_consolidados_estados = {}
@@ -85,12 +89,27 @@ def processar_modelos_eleitorais(dados_estados, progresso_geral):
         if progresso_geral == 0:
             proj_estado_a = dados["votos_total_esperados"] * 0.5
             proj_estado_b = dados["votos_total_esperados"] * 0.5
+            desvio_identificado = 0.0
         else:
-            pct_historico_a = DADOS_ESTADOS_1_TURNO[uf]["pct_a"] / 100
-            pct_historico_b = 1.0 - pct_historico_a
+            total_parcial = votos_ja_apurados_a + votos_ja_apurados_b
+            pct_real_atual_a = (votos_ja_apurados_a / total_parcial) if total_parcial > 0 else (DADOS_ESTADOS_1_TURNO[uf]["pct_a"] / 100)
             
-            proj_estado_a = votos_ja_apurados_a + (votos_restantes * pct_historico_a)
-            proj_estado_b = votos_ja_apurados_b + (votos_restantes * pct_historico_b)
+            # MOTOR DE AVALIAÇÃO: Calcula a diferença exata entre o Real Atual e o Previsto do 1º Turno
+            pct_previsto_1_turno_a = DADOS_ESTADOS_1_TURNO[uf]["pct_a"] / 100
+            desvio_identificado = pct_real_atual_a - pct_previsto_1_turno_a
+            
+            # FILTRO DE ESTABILIDADE: O peso do desvio aumenta conforme mais urnas daquele estado abrem
+            # Evita que as primeiras 3 urnas distorçam todo o cálculo futuro
+            fator_estabilidade = dados["progresso_uf"] / 100.0
+            desvio_calibrado = desvio_identificado * fator_estabilidade
+            
+            # TENDÊNCIA DINÂMICA: Ajusta a intenção do saldo restante com base no aprendizado atual
+            pct_dinamico_futuro_a = max(0.0, min(1.0, pct_previsto_1_turno_a + desvio_calibrado))
+            pct_dinamico_futuro_b = 1.0 - pct_dinamico_futuro_a
+            
+            # Projeta aplicando o motor de correção sobre o saldo restante
+            proj_estado_a = votos_ja_apurados_a + (votos_restantes * pct_dinamico_futuro_a)
+            proj_estado_b = votos_ja_apurados_b + (votos_restantes * pct_dinamico_futuro_b)
             
         total_projetado_nacional_a += proj_estado_a
         total_projetado_nacional_b += proj_estado_b
@@ -107,7 +126,8 @@ def processar_modelos_eleitorais(dados_estados, progresso_geral):
             "votos_b": dados["votos_b"],
             "votos_projetados_total": int(soma_estado),
             "pct_projetado_a": pct_proj_estado_a,
-            "pct_projetado_b": pct_proj_estado_b
+            "pct_projetado_b": pct_proj_estado_b,
+            "desvio_real": desvio_identificado * 100  # Armazena o erro para exibição
         }
         
     soma_nacional = total_projetado_nacional_a + total_projetado_nacional_b
@@ -124,20 +144,19 @@ def processar_modelos_eleitorais(dados_estados, progresso_geral):
 # ==============================================================================
 st.set_page_config(page_title="Monitor Estatístico de Urnas", page_icon="🔮", layout="wide")
 
-# CRONÔMETRO DE ATUALIZAÇÃO AUTOMÁTICA (Roda a cada 20000 milissegundos = 20 segundos)
-# O próprio Streamlit cuida do loop sem travar o navegador
+# CRONÔMETRO DE ATUALIZAÇÃO AJUSTADO PARA 20 SEGUNDOS
 st.fragment(run_every=20)
 
-st.title("🔮 Monitor de Urnas com Projeção por Estado")
-st.subheader("Visualização geopolítica e eliminação de viés de apuração em tempo real")
+st.title("🔮 Monitor de Urnas com Projeção Dinâmica por Estado")
+st.subheader("Algoritmo adaptativo com Motor de Ajuste e Aprendizado em Tempo Real")
 
-st.sidebar.header("🕹️ Configuração do Systema")
+st.sidebar.header("🕹️ Configuração do Sistema")
 modo_sistema = st.sidebar.radio("Selecione o modo de operação:", ["Simulador (Ambiente de Testes)", "AO VIVO (Dados Reais do TSE)"])
 
 if modo_sistema == "AO VIVO (Dados Reais do TSE)":
     progresso_visual = 0
     dados_processados = buscar_dados_simulados(0) 
-    st.sidebar.caption("📡 Atualizando dados em tempo real automaticamente a cada 20s.")
+    st.sidebar.caption("📡 Motor adaptativo operando a cada 20 segundos.")
 else:
     progresso_visual = st.sidebar.slider("Porcentagem geral de urnas abertas:", 0, 100, 0, step=5)
     dados_processados = buscar_dados_simulados(progresso_visual)
@@ -160,28 +179,7 @@ with col1:
     st.metric(label="🔵 Flávio Bolsonaro (Votos Reais Computados)", value=f"{votos_totais_flavio:,}", delta=f"{pct_nacional_flavio:.2f}%" if progresso_visual > 0 else "50.00%")
 
 with col2:
-    st.markdown("### 🧠 Projeção Ponderada por Estado (Previsão Final)")
+    st.markdown("### 🧠 Projeção Adaptativa Ponderada (Previsão Final)")
     if progresso_visual == 0:
-        st.info("📊 Aguardando abertura das urnas. Modelo inicializado em estabilidade absoluta (50/50).")
+        st.info("📊 Aguardando abertura das urnas. Motor de aprendizado inicializado em neutralidade (50/50).")
     else:
-        st.success("✅ Modelo matemático calculando pesos com estabilidade dinâmica.")
-    st.metric(label="🔮 Lula (Resultado Final Projetado)", value=f"{proj_lula:.2f}%")
-    st.metric(label="🔮 Flávio Bolsonaro (Resultado Final Projetado)", value=f"{proj_flavio:.2f}%")
-
-st.write("---")
-st.markdown("### 📋 Detalhamento Estratégico por Estado")
-
-lista_tabela = []
-for uf, d in dados_finais.items():
-    lista_tabela.append({
-        "Estado": uf,
-        "Progresso": f"{d['progresso_uf']:.1f}%",
-        "Votos Apurados (Reais)": f"{d['votos_apurados']:,}",
-        "Votos Lula (Parcial)": f"{d['votos_a']:,}",
-        "Votos Flávio (Parcial)": f"{d['votos_b']:,}",
-        "Votos Finais Projetados (Total)": f"{d['votos_projetados_total']:,}",
-        "Projeção Final Lula": f"{d['pct_projetado_a']:.2f}%",
-        "Projeção Final Flávio": f"{d['pct_projetado_b']:.2f}%"
-    })
-
-st.table(lista_tabela)
