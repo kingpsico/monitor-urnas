@@ -448,7 +448,7 @@ def carregar_simulado(progresso, desvio_pp):
             "pct_secoes": prog_uf,
             "secoes_total": 1000,
             "secoes_apuradas": int(10 * prog_uf),
-            "atualizado_em": f"SIMULADO {progresso}",
+            "atualizado_em": "SIMULADO " + str(progresso),
             "obsoleto": False,
             "url": "",
         }
@@ -461,7 +461,7 @@ def carregar_simulado(progresso, desvio_pp):
         "pct_secoes": float(progresso),
         "secoes_total": 27_000,
         "secoes_apuradas": int(270 * progresso),
-        "atualizado_em": f"SIMULADO {progresso}",
+        "atualizado_em": "SIMULADO " + str(progresso),
         "url": "",
     }
     status = "aguardando" if progresso <= 0 else ("concluido" if progresso >= 100 else "apurando")
@@ -670,7 +670,7 @@ def registrar_historico(chave, nacional, total_a, total_b):
     ponto = {
         "carimbo": nacional.get("atualizado_em", ""),
         "Hora": datetime.now(TZ).strftime("%H:%M:%S"),
-        "Seções apuradas %": nacional["pct_secoes"],
+        "Seções apuradas %": round(nacional["pct_secoes"], 2),
         "Lula projeção %": pct_a,
         "Flávio projeção %": 100 - pct_a,
         "Diferença projetada (Lula − Flávio)": total_a - total_b,
@@ -835,12 +835,16 @@ def painel(modo, escala, m, modo_base, prog_sim, desvio_sim):
         serie = registrar_historico(chave, nacional, total_a, total_b)
         if len(serie) >= 2:
             st.subheader("3. Evolução da projeção")
-            dh = pd.DataFrame(serie).set_index("Hora")
+            dh = pd.DataFrame(serie).sort_values("Seções apuradas %", kind="stable")
             g1, g2 = st.columns(2)
-            g1.caption("Projeção % de cada candidato")
-            g1.line_chart(dh[["Lula projeção %", "Flávio projeção %"]])
-            g2.caption("Diferença projetada em votos (Lula − Flávio)")
-            g2.line_chart(dh[["Diferença projetada (Lula − Flávio)"]])
+            g1.caption("Projeção % de cada candidato (eixo: % de seções apuradas)")
+            g1.line_chart(
+                dh, x="Seções apuradas %", y=["Lula projeção %", "Flávio projeção %"]
+            )
+            g2.caption("Diferença projetada em votos, Lula − Flávio (eixo: % de seções apuradas)")
+            g2.line_chart(
+                dh, x="Seções apuradas %", y=["Diferença projetada (Lula − Flávio)"]
+            )
 
     # ---------- 4. motor: clima por região ----------
     st.subheader("4. Motor de análise — o que as urnas estão dizendo")
