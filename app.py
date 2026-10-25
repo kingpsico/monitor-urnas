@@ -694,6 +694,28 @@ def mostrar_df(df):
         st.dataframe(df, use_container_width=True, hide_index=True)
 
 
+CORES_REGIAO = {
+    "Sul": "#1f77b4",  # azul
+    "Sudeste": "#ff7f0e",  # laranja
+    "Norte": "#2ca02c",  # verde
+    "Nordeste": "#d62728",  # vermelho
+    "Centro-Oeste": "#9467bd",  # roxo
+    "Exterior": "#17becf",  # turquesa
+}
+
+
+def tema_escuro():
+    """Detecta o tema do Streamlit; se não der, assume escuro."""
+    try:
+        return st.context.theme.type != "light"
+    except Exception:
+        pass
+    try:
+        return st.get_option("theme.base") != "light"
+    except Exception:
+        return True
+
+
 def grafico_urnas(df):
     """Barras: maiores colégios eleitorais à esquerda; altura = % de urnas apuradas."""
     d = df[["uf", "regiao", "pct_secoes", "votos_previstos"]].copy()
@@ -701,21 +723,35 @@ def grafico_urnas(df):
     d["pct"] = d["pct_secoes"].round(1)
     d["previstos"] = d["votos_previstos"].round(0).astype("int64")
     ordem = d["uf"].tolist()
+    cor_rotulo = "#FFFFFF" if tema_escuro() else "#000000"  # oposta ao fundo
     try:
         import altair as alt
 
+        escala_cor = alt.Scale(
+            domain=list(CORES_REGIAO), range=list(CORES_REGIAO.values())
+        )
         base = alt.Chart(d).encode(
             x=alt.X("uf:N", sort=ordem, title="Estado (maior eleitorado à esquerda)"),
-            y=alt.Y("pct:Q", scale=alt.Scale(domain=[0, 100]), title="% de urnas apuradas"),
+            y=alt.Y("pct:Q", scale=alt.Scale(domain=[0, 105]), title="% de urnas apuradas"),
             tooltip=[
                 alt.Tooltip("uf:N", title="Estado"),
+                alt.Tooltip("regiao:N", title="Região"),
                 alt.Tooltip("pct:Q", title="% apuradas"),
                 alt.Tooltip("previstos:Q", title="Votos previstos", format=","),
             ],
         )
-        barras = base.mark_bar().encode(color=alt.Color("regiao:N", title="Região"))
-        rotulos = base.mark_text(dy=-7, fontSize=11).encode(text=alt.Text("pct:Q", format=".0f"))
-        grafico = (barras + rotulos).properties(height=320)
+        barras = base.mark_bar().encode(
+            color=alt.Color(
+                "regiao:N",
+                scale=escala_cor,
+                sort=list(CORES_REGIAO),
+                title="Região",
+            )
+        )
+        rotulos = base.mark_text(
+            dy=-8, fontSize=13, fontWeight="bold", color=cor_rotulo
+        ).encode(text=alt.Text("pct:Q", format=".0f"))
+        grafico = (barras + rotulos).properties(height=340)
         try:
             st.altair_chart(grafico, width="stretch")
         except Exception:
