@@ -61,7 +61,10 @@ def buscar_dados_simulados(progresso_geral):
             pct_ajustado_a = info["pct_a"]
             pct_ajustado_b = info["pct_b"]
             
-        votos_a = int(votos_apurados * (pct_ajustado_a / (pct_ajustado_a + pct_ajustado_b if (pct_ajustado_a + pct_ajustado_b) > 0 else 1)))
+        soma_ajustada = pct_ajustado_a + pct_ajustado_b
+        fator_divisao = soma_ajustada if soma_ajustada > 0 else 1
+        votos_a = int(votos_apurados * (pct_ajustado_a / fator_divisao))
+        
         dados_apuracao_estados[uf] = {
             "progresso_uf": progresso_uf,
             "votos_total_esperados": info["votos_esperados"],
@@ -87,8 +90,10 @@ def buscar_dados_reais_tse():
             votos_cand_a = 0
             votos_cand_b = 0
             for cand in json_tse["cand"]:
-                if cand["seq"] == "1": votos_cand_a = int(cand["vap"])
-                elif cand["seq"] == "2": votos_cand_b = int(cand["vap"])
+                if cand["seq"] == "1": 
+                    votos_cand_a = int(cand["vap"])
+                elif cand["seq"] == "2": 
+                    votos_cand_b = int(cand["vap"])
                 
             dados_apuracao_estados[uf] = {
                 "progresso_uf": progresso_uf,
@@ -122,10 +127,9 @@ def processar_modelos_eleitorais(dados_estados, progresso_geral):
         votos_ja_apurados_b = dados["votos_b"]
         votos_restantes = dados["votos_total_esperados"] - dados["votos_apurados"]
         
-        # Normalização dos pesos históricos para lidar com abstenções/brancos calculados
         total_pct_historico = DADOS_ESTADOS_1_TURNO[uf]["pct_a"] + DADOS_ESTADOS_1_TURNO[uf]["pct_b"]
-        pct_base_a = DADOS_ESTADOS_1_TURNO[uf]["pct_a"] / total_pct_historico
-        pct_base_b = DADOS_ESTADOS_1_TURNO[uf]["pct_b"] / total_pct_historico
+        fator_base = total_pct_historico if total_pct_historico > 0 else 1
+        pct_base_a = DADOS_ESTADOS_1_TURNO[uf]["pct_a"] / fator_base
         
         if urnas_totais_br_computadas == 0:
             proj_estado_a = dados["votos_total_esperados"] * 0.5
