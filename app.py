@@ -19,19 +19,19 @@ DADOS_ESTADOS_1_TURNO = {
     "GO": {"votos_esperados": 4_350_000, "pct_a": 41.0, "pct_b": 59.0},
     "PB": {"votos_esperados": 2_672_000, "pct_a": 64.0, "pct_b": 36.0},
     "RN": {"votos_esperados": 2_248_000, "pct_a": 63.0, "pct_b": 37.0},
-    "AL": {"votos_esperados": 1_940_000, "pct_a": 58.5, "pct_b": 41.0},
+    "AL": {"votos_esperados": 1_940_000, "pct_a": 58.0, "pct_b": 42.0},
     "PI": {"votos_esperados": 2_180_000, "pct_a": 74.0, "pct_b": 26.0},
-    "MT": {"votos_esperados": 2_410_000, "pct_a": 35.0, "pct_b": 65.0},
-    "DF": {"votos_esperados": 1_921_000, "pct_a": 39.0, "pct_b": 61.0},
-    "ES": {"votos_esperados": 2_520_000, "pct_a": 43.0, "pct_b": 57.0},
-    "AM": {"votos_esperados": 2_190_000, "pct_a": 50.0, "pct_b": 50.0},
+    "MT": {"votos_esperados": 2_410_000, "pct_a": 33.0, "pct_b": 66.5},
+    "DF": {"votos_esperados": 1_921_000, "pct_a": 38.0, "pct_b": 57.0},
+    "ES": {"votos_esperados": 2_520_000, "pct_a": 42.0, "pct_b": 57.0},
+    "AM": {"votos_esperados": 2_190_000, "pct_a": 51.0, "pct_b": 48.5},
     "MS": {"votos_esperados": 1_730_000, "pct_a": 38.0, "pct_b": 62.0},
-    "SE": {"votos_esperados": 1_360_000, "pct_a": 62.0, "pct_b": 38.0},
-    "RO": {"votos_esperados": 1_112_000, "pct_a": 30.0, "pct_b": 70.0},
-    "TO": {"votos_esperados": 970_000,  "pct_a": 52.0, "pct_b": 48.0},
+    "SE": {"votos_esperados": 1_360_000, "pct_a": 64.0, "pct_b": 36.0},
+    "RO": {"votos_esperados": 1_112_000, "pct_a": 27.0, "pct_b": 72.0},
+    "TO": {"votos_esperados": 970_000,  "pct_a": 48.0, "pct_b": 51.0},
     "AC": {"votos_esperados": 545_000,  "pct_a": 27.5, "pct_b": 65.0},
-    "AP": {"votos_esperados": 535_000,  "pct_a": 46.0, "pct_b": 54.0},
-    "RR": {"votos_esperados": 333_000,  "pct_a": 25.0, "pct_b": 75.0}
+    "AP": {"votos_esperados": 535_000,  "pct_a": 49.0, "pct_b": 48.5},
+    "RR": {"votos_esperados": 333_000,  "pct_a": 26.0, "pct_b": 73.0}
 }
 
 # ==============================================================================
