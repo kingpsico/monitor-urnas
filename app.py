@@ -787,6 +787,17 @@ def painel(modo, escala, m, modo_base, prog_sim, desvio_sim):
     bases = construir_bases(escala, dados["r1"], modo_base)
     df, clima_resumo = motor(dados["unidades"], bases, m)
 
+    # ---------- alerta de formato inesperado ----------
+    if status == "aguardando":
+        estranhos = [
+            e for e in dados["erros"] if "ainda não publicado" not in e and "HTTP 40" not in e
+        ]
+        if estranhos:
+            st.error(
+                "🚨 O TSE respondeu, mas o app não conseguiu ler o arquivo (formato inesperado "
+                "ou erro de rede). Detalhe: " + estranhos[0][:200] + "  — veja o 'Diagnóstico técnico'."
+            )
+
     # ---------- faixa de status ----------
     if status == "aguardando":
         if modo == MODO_OFICIAL and agora < INICIO_DIVULGACAO:
